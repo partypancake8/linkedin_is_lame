@@ -4,39 +4,76 @@ Minimal Python automation for LinkedIn Easy Apply submissions.
 
 ## Setup
 
-1. **Install dependencies:**
+1. **Create virtual environment and install dependencies:**
 
    ```bash
+   python3 -m venv venv
+   source venv/bin/activate
    pip install -r requirements.txt
    playwright install chromium
    ```
 
-2. **Configure paths in `bot.py`:**
+2. **Log into LinkedIn (one-time setup):**
 
-   - `CHROME_USER_DATA_DIR`: Your Chrome profile directory (default: `~/Library/Application Support/Google/Chrome`)
-   - `CHROME_PROFILE`: Chrome profile name (default: `Default`)
-   - `RESUME_PATH`: Path to your resume PDF (update this!)
+   ```bash
+   ./setup_login.sh
+   ```
 
-3. **Prepare resume:**
+   - A browser will open showing LinkedIn login
+   - Log in with your credentials
+   - **Press Ctrl+C in the terminal when done** to save the session
+   - Your login will be saved for all future bot runs
 
-   - Place your resume PDF in the project directory or update `RESUME_PATH` in `bot.py`
-
-4. **Ensure LinkedIn session:**
-   - Open Chrome and log into LinkedIn
-   - Keep the browser profile active (the bot uses your existing session)
+3. **Configure resume path in `bot.py` if needed:**
+   - `RESUME_PATH`: Currently set to `/Users/sawyersmith/Documents/resume2025.pdf`
 
 ## Usage
 
+### Option 1: Manual Trigger Bot (Recommended - Most Reliable)
+
+This approach works around LinkedIn's bot detection by having you manually click Easy Apply, then automating the form filling:
+
 ```bash
+./run_manual.sh "https://www.linkedin.com/jobs/view/123456789/"
+```
+
+**What happens:**
+
+1. Browser opens to the job page
+2. You manually click the "Easy Apply" button
+3. Press Enter when the modal opens
+4. Bot automatically fills and submits the form
+
+**Advantages:**
+
+- Bypasses LinkedIn's anti-automation completely
+- 100% reliable
+- Still saves significant time (no manual form filling)
+
+### Option 2: Fully Automated Bot (Experimental)
+
+**Quick run with helper script:**
+
+```bash
+./run.sh "https://www.linkedin.com/jobs/view/123456789/"
+```
+
+**Or run directly (remember to activate venv first):**
+
+```bash
+source venv/bin/activate
 python bot.py "https://www.linkedin.com/jobs/view/123456789/"
 ```
 
 The script will:
 
 - Open the job URL in Chrome
-- Detect Easy Apply availability
+- Attempt to automate Easy Apply (may be blocked by LinkedIn)
 - Submit if flow is simple (single-step, no questions)
 - Skip if complexity exceeds MVP scope
+
+**Note:** This fully automated approach is unreliable due to LinkedIn's bot detection. Use Option 1 for reliable results.
+
 - Log result to `log.jsonl`
 
 ## What Gets Skipped

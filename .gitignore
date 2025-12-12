@@ -10,3 +10,4 @@ ENV/
 log.jsonl
 resume.pdf
 .DS_Store
+browser_data/
