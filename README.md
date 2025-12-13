@@ -100,5 +100,16 @@ Status values: `SUCCESS`, `SKIPPED`, `FAILED`
 
 - The script runs once per invocation (no loops)
 - Browser runs in non-headless mode by default (set `headless=True` for background use)
-- No automated login - uses your existing Chrome session
+- Browser session saved in `browser_data/` directory
 - No retries - exits immediately on skip/fail
+
+## Project Structure
+
+See [STRUCTURE.md](STRUCTURE.md) for complete file organization.
+
+**Key files:**
+
+- `bot_manual.py` - Main bot (recommended)
+- `bot.py` - Experimental automation
+- `run_manual.sh` - Quick run script
+- `archive/` - Debug scripts and screenshots

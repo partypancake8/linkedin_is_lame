@@ -1,13 +1,23 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+
+# Virtual environments
 venv/
 env/
 ENV/
-.venv
+.venv/
+
+# Project files
 log.jsonl
-resume.pdf
-.DS_Store
 browser_data/
+archive/
+debug_*.png
+*.pdf
+
+# System
+.DS_Store
+node_modules/
