@@ -13,6 +13,28 @@ import random
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 
+# Static answer bank - known facts only, no job-specific data
+ANSWER_BANK = {
+    # Numeric answers
+    'years_experience': '1',
+    'years_of_experience': '1',
+    'total_experience': '1',
+    'work_experience': '1',
+    'notice_period': '2',
+    'notice_period_weeks': '2',
+    'gpa': '3.5',
+    
+    # Text answers
+    'linkedin_url': 'https://linkedin.com/in/yourprofile',
+    'portfolio_url': 'https://yourportfolio.com',
+    'github_url': 'https://github.com/yourusername',
+    'website': 'https://yourwebsite.com',
+    
+    # Short text responses (safe, generic)
+    'skills_summary': 'Strong background in software development with focus on automation and testing.',
+    'why_interested': 'Interested in contributing to innovative projects and growing technical skills.',
+}
+
 def log_result(job_url, status, reason="", steps_completed=0):
     """Log application result to JSONL file"""
     result = {
@@ -163,6 +185,11 @@ def detect_state(page, step_number):
         modal_visible = page.locator('[role="dialog"]').is_visible()
         
         if modal_visible:
+            # CHECK FOR TEXT FIELDS FIRST - before button detection
+            text_fields = detect_text_fields_in_modal(page)
+            if len(text_fields) > 0:
+                return "MODAL_TEXT_FIELD_DETECTED"
+            
             # We're in the modal - check what buttons are present
             submit_selectors = [
                 'button:has-text("Submit application")',
@@ -236,6 +263,193 @@ def activate_button_in_modal(page, button_text):
         print(f"  ⚠️ Error activating '{button_text}': {e}")
         return False
 
+def detect_text_fields_in_modal(page):
+    """Detect visible text input fields inside Easy Apply modal only"""
+    try:
+        # Scope detection to modal container only
+        modal_selector = '[role="dialog"]'
+        
+        # Find all text-like inputs within the modal
+        field_selectors = [
+            f'{modal_selector} input[type="text"]',
+            f'{modal_selector} input[type="number"]',
+            f'{modal_selector} textarea',
+        ]
+        
+        # Fields to SKIP - these are auto-fillable or optional
+        skip_patterns = [
+            'phone', 'mobile', 'telephone', 'cell',  # Phone fields
+            'email', 'e-mail',  # Email fields
+            'address', 'street', 'city', 'zip', 'postal',  # Address fields
+            'linkedin', 'website', 'url', 'portfolio',  # Social/web links
+        ]
+        
+        detected_fields = []
+        
+        for selector in field_selectors:
+            fields = page.locator(selector)
+            count = fields.count()
+            
+            for i in range(count):
+                field = fields.nth(i)
+                
+                # Skip if disabled or hidden
+                if not field.is_visible() or field.is_disabled():
+                    continue
+                
+                # Skip if field already has a value (already filled)
+                current_value = field.input_value()
+                if current_value and current_value.strip():
+                    continue
+                
+                # Extract metadata
+                field_id = field.get_attribute('id') or ''
+                field_name = field.get_attribute('name') or ''
+                placeholder = field.get_attribute('placeholder') or ''
+                aria_label = field.get_attribute('aria-label') or ''
+                
+                # Try to find associated label
+                label_text = ''
+                if field_id:
+                    label = page.locator(f'label[for="{field_id}"]')
+                    if label.count() > 0:
+                        label_text = label.first.inner_text().strip()
+                
+                # Determine field type
+                tag_name = field.evaluate('el => el.tagName').lower()
+                input_type = field.get_attribute('type') if tag_name == 'input' else 'textarea'
+                
+                # Check if this field should be skipped
+                should_skip = False
+                text_to_check = f"{field_id} {field_name} {label_text} {placeholder} {aria_label}".lower()
+                
+                for pattern in skip_patterns:
+                    if pattern in text_to_check:
+                        should_skip = True
+                        print(f"  ⏭️  Skipping auto-fillable field: {label_text or placeholder or field_name} (matched: {pattern})")
+                        break
+                
+                if should_skip:
+                    continue
+                
+                detected_fields.append({
+                    'element': field,
+                    'tag': tag_name,
+                    'input_type': input_type,
+                    'label': label_text,
+                    'aria_label': aria_label,
+                    'placeholder': placeholder,
+                    'name': field_name,
+                })
+        
+        return detected_fields
+    
+    except Exception as e:
+        print(f"  ⚠️ Error detecting text fields: {e}")
+        return []
+
+def classify_field_type(field_metadata):
+    """
+    Classify field as NUMERIC, TEXT, or UNKNOWN based on hard rules.
+    No AI, no guessing - deterministic only.
+    """
+    input_type = field_metadata.get('input_type', '').lower()
+    label = field_metadata.get('label', '').lower()
+    placeholder = field_metadata.get('placeholder', '').lower()
+    aria_label = field_metadata.get('aria_label', '').lower()
+    
+    # Combine all text for keyword matching
+    combined_text = f"{label} {placeholder} {aria_label}"
+    
+    # RULE 1: HTML5 input type
+    if input_type == 'number':
+        return 'NUMERIC_FIELD'
+    
+    # RULE 2: Keyword patterns for numeric fields
+    numeric_keywords = [
+        'year', 'years', 'yrs',
+        'experience',
+        'month', 'months',
+        'salary', 'compensation',
+        'notice period', 'notice',
+        'gpa',
+    ]
+    
+    for keyword in numeric_keywords:
+        if keyword in combined_text:
+            return 'NUMERIC_FIELD'
+    
+    # RULE 3: Textarea is always text
+    if field_metadata.get('tag') == 'textarea':
+        return 'TEXT_FIELD'
+    
+    # RULE 4: If it's a text input type
+    if input_type in ['text', 'tel', 'url', '']:
+        return 'TEXT_FIELD'
+    
+    # RULE 5: Unknown
+    return 'UNKNOWN_FIELD'
+
+def resolve_field_answer(field_metadata, field_classification):
+    """
+    Pure function: given field metadata and classification, return answer or None.
+    
+    Returns:
+        str: value to type into field
+        None: if no confident match found
+    """
+    label = field_metadata.get('label', '').lower()
+    placeholder = field_metadata.get('placeholder', '').lower()
+    aria_label = field_metadata.get('aria_label', '').lower()
+    
+    # Combine for matching
+    combined_text = f"{label} {placeholder} {aria_label}"
+    
+    # Keyword → answer bank key mappings
+    keyword_mappings = {
+        # Numeric mappings
+        ('year', 'experience'): 'years_experience',
+        ('years', 'experience'): 'years_experience',
+        ('work experience',): 'work_experience',
+        ('total experience',): 'total_experience',
+        ('notice period', 'week'): 'notice_period_weeks',
+        ('notice',): 'notice_period',
+        ('gpa',): 'gpa',
+        
+        # Text mappings
+        ('linkedin', 'url'): 'linkedin_url',
+        ('linkedin', 'profile'): 'linkedin_url',
+        ('portfolio', 'url'): 'portfolio_url',
+        ('portfolio', 'website'): 'portfolio_url',
+        ('github',): 'github_url',
+        ('website',): 'website',
+        ('skills',): 'skills_summary',
+        ('why', 'interested'): 'why_interested',
+        ('why', 'want', 'work'): 'why_interested',
+    }
+    
+    # Try to match keywords
+    matched_key = None
+    for keywords, bank_key in keyword_mappings.items():
+        if all(kw in combined_text for kw in keywords):
+            matched_key = bank_key
+            break
+    
+    if matched_key and matched_key in ANSWER_BANK:
+        answer = ANSWER_BANK[matched_key]
+        
+        # TYPE SAFETY CHECK
+        if field_classification == 'NUMERIC_FIELD':
+            # Ensure answer is numeric
+            if not answer.replace('.', '').isdigit():
+                print(f"  ⚠️ Warning: Numeric field matched to non-numeric answer '{matched_key}'")
+                return None
+        
+        return answer
+    
+    # No confident match
+    return None
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python bot_manual.py <job_url>")
@@ -273,39 +487,25 @@ def main():
         
         print()
         print("="*60)
-        print("EASY APPLY ACTIVATION")
+        print("EASY APPLY ACTIVATION - AUTO MODE")
         print("="*60)
         print()
-        print("Choose how to activate Easy Apply:")
-        print()
-        print("1. AUTO - Let bot use keyboard to find and press Easy Apply")
-        print("2. MANUAL - You press Tab and Enter yourself")
-        print()
-        choice = input("Enter choice (1 or 2, default=1): ").strip() or "1"
+        print("🤖 Bot will attempt keyboard navigation to Easy Apply...")
+        print("Looking for Easy Apply button...")
         
-        if choice == "1":
-            print("\n🤖 Bot will attempt keyboard navigation to Easy Apply...")
-            print("Looking for Easy Apply button...")
-            
-            # Try to navigate to Easy Apply using keyboard
-            success = keyboard_navigate_and_click_button(page, "Easy Apply", max_tabs=30)
-            
-            if success:
-                print("✅ Bot successfully activated Easy Apply!")
-                page.wait_for_timeout(2000)
-            else:
-                print("⚠️ Bot couldn't find Easy Apply via keyboard")
-                print("\nPlease manually:")
-                print("  1. Press Tab until Easy Apply is highlighted")
-                print("  2. Press Enter")
-                print()
-                input("Press Enter here when modal opens...")
+        # Try to navigate to Easy Apply using keyboard
+        success = keyboard_navigate_and_click_button(page, "Easy Apply", max_tabs=30)
+        
+        if success:
+            print("✅ Bot successfully activated Easy Apply!")
+            page.wait_for_timeout(2000)
         else:
-            print("\n👆 Please manually activate Easy Apply:")
-            print("  1. Press Tab repeatedly until Easy Apply button is highlighted")
-            print("  2. Press Enter to activate it")
+            print("⚠️ Bot couldn't find Easy Apply via keyboard")
+            print("\nPlease manually:")
+            print("  1. Press Tab until Easy Apply is highlighted")
+            print("  2. Press Enter")
             print()
-            input("Press Enter here when the modal has opened...")
+            input("Press Enter here when modal opens...")
         
         print()
         # Wait for modal to appear
@@ -317,10 +517,6 @@ def main():
         
         steps_completed += 1
         page.wait_for_timeout(1000)
-        
-        # Take screenshot of modal
-        page.screenshot(path="debug_modal.png")
-        print("  Screenshot saved: debug_modal.png")
         
         # Look for form elements
         print("\nAnalyzing form...")
@@ -361,6 +557,7 @@ def main():
         max_steps = 10
         current_step = 0
         resume_path = "/Users/sawyersmith/Documents/resume2025.pdf"
+        text_fields_processed = False  # Track if text fields were already processed this step
         
         while current_step < max_steps:
             current_step += 1
@@ -438,14 +635,151 @@ def main():
             
             page.wait_for_timeout(500)
             
-            # Take screenshot
-            page.screenshot(path=f"debug_step_{current_step}.png")
-            print(f"  Screenshot: debug_step_{current_step}.png")
-            
             # STATE-DRIVEN ACTIONS - no more blind button checking
-            if state == "MODAL_SINGLE_STEP":
+            if state == "MODAL_TEXT_FIELD_DETECTED":
+                # Only process text fields once per step
+                if text_fields_processed:
+                    print("\n⏭️  Text fields already processed this step, checking for navigation buttons...")
+                    # Skip to button detection by continuing loop
+                    continue
+                
+                print("\n📝 Text field(s) detected in modal")
+                
+                # Detect fields again to get metadata
+                text_fields = detect_text_fields_in_modal(page)
+                field_count = len(text_fields)
+                
+                print(f"   Found {field_count} text input field(s) requiring input")
+                
+                # Process ALL text fields with semantic resolution
+                for idx, field in enumerate(text_fields, 1):
+                    field_info = {
+                        'tag': field.get('tag', 'input'),
+                        'input_type': field.get('input_type', 'text'),
+                        'label': field['label'],
+                        'aria_label': field['aria_label'],
+                        'placeholder': field['placeholder'],
+                        'name': field['name'],
+                    }
+                    
+                    print(f"\n   Field {idx}/{field_count}:")
+                    print(f"     Tag: {field_info['tag']}")
+                    print(f"     Input Type: {field_info['input_type']}")
+                    print(f"     Label: {field_info['label']}")
+                    print(f"     Placeholder: {field_info['placeholder']}")
+                    
+                    # CLASSIFY FIELD
+                    classification = classify_field_type(field_info)
+                    print(f"     Classification: {classification}")
+                    
+                    # RESOLVE ANSWER
+                    resolved_value = resolve_field_answer(field_info, classification)
+                    
+                    if resolved_value:
+                        print(f"     Resolved Answer: '{resolved_value}'")
+                        value_to_type = resolved_value
+                        needs_pause = False
+                    else:
+                        print(f"     ⚠️ No answer found - using TEST")
+                        # Do NOT type TEST into numeric fields
+                        if classification == 'NUMERIC_FIELD':
+                            print(f"     ⚠️ Numeric field with no answer - will PAUSE")
+                            value_to_type = None
+                            needs_pause = True
+                        else:
+                            value_to_type = "TEST"
+                            needs_pause = True
+                    
+                    # TYPE VALUE if we have one
+                    if value_to_type:
+                        print(f"     Typing '{value_to_type}'...")
+                        try:
+                            field['element'].focus()
+                            time.sleep(0.3)
+                            page.keyboard.press("Control+a")
+                            time.sleep(0.1)
+                            page.keyboard.type(value_to_type, delay=random.randint(50, 150))
+                            time.sleep(0.3)
+                            print(f"     ✓ Typed '{value_to_type}'")
+                        except Exception as e:
+                            print(f"     ⚠️ Error typing: {e}")
+                            needs_pause = True
+                    
+                    # Track for logging
+                    field['classification'] = classification
+                    field['resolved_value'] = resolved_value
+                    field['typed_value'] = value_to_type
+                    field['needs_pause'] = needs_pause
+                
+                # Check if ANY field needs pause
+                any_unresolved = any(f.get('needs_pause', False) for f in text_fields)
+                
+                # Log to file with enhanced metadata
+                log_entry = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "job_url": job_url,
+                    "state": "MODAL_TEXT_FIELD_DETECTED",
+                    "action": "FIELD_RESOLUTION_ATTEMPTED",
+                    "field_count": field_count,
+                    "fields": [
+                        {
+                            "label": f['label'],
+                            "placeholder": f['placeholder'],
+                            "type": f.get('input_type', 'unknown'),
+                            "classification": f.get('classification', 'UNKNOWN'),
+                            "resolved_answer": f.get('resolved_value'),
+                            "typed_value": f.get('typed_value'),
+                            "needs_pause": f.get('needs_pause', False),
+                        }
+                        for f in text_fields
+                    ]
+                }
+                with open("log.jsonl", "a") as f:
+                    f.write(json.dumps(log_entry) + "\n")
+                
+                if any_unresolved:
+                    # PAUSE FOR HUMAN INSPECTION
+                    print(f"\n⏸️  PAUSED - {field_count} field(s) detected, some unresolved")
+                    print("   Some fields could not be auto-filled")
+                    print("   Options:")
+                    print("     1. Press Enter to SKIP this application (recommended)")
+                    print("     2. Manually correct the fields and continue")
+                    print()
+                    
+                    choice = input("Press Enter to skip application: ").strip()
+                    
+                    print("\n⚠️ Skipping application - unresolved fields present")
+                    log_result(job_url, "SKIPPED", "Text fields with unresolved answers", steps_completed)
+                    context.close()
+                    return
+                else:
+                    # ALL FIELDS RESOLVED - continue to next step
+                    print(f"\n✅ All {field_count} field(s) resolved automatically")
+                    print("   Continuing to next step...")
+                    text_fields_processed = True  # Mark as processed
+                    # Don't return - let the loop continue to detect Submit/Next buttons
+            
+            elif state == "MODAL_SINGLE_STEP":
                 print("\n🎯 Single-step application detected!")
-                print("✅ This is our target - submitting via keyboard!")
+                print("✅ This is our target - ready to submit via keyboard!")
+                
+                # MANUAL CONFIRMATION REQUIRED
+                print("\n⚠️  FINAL SUBMISSION CONFIRMATION")
+                print("   The application is ready to be submitted.")
+                print("   Type YES to submit, or NO to exit without submitting.")
+                print()
+                
+                confirmation = input("Submit application? (YES/NO): ").strip().upper()
+                
+                if confirmation != "YES":
+                    print("\n❌ Submission cancelled by user")
+                    log_result(job_url, "CANCELLED", "User declined final submission", steps_completed)
+                    print("\nKeeping browser open for inspection...")
+                    input("Press Enter to close browser...")
+                    context.close()
+                    return
+                
+                print("\n✅ User confirmed - proceeding with submission...")
                 
                 # Activate submit button using modal-scoped method
                 if activate_button_in_modal(page, "Submit"):
@@ -488,6 +822,7 @@ def main():
                 # Activate Next button using modal-scoped method
                 if activate_button_in_modal(page, "Next"):
                     page.wait_for_timeout(2000)
+                    text_fields_processed = False  # Reset for next step
                     # Continue to next iteration
                     continue
                 else:
@@ -504,8 +839,27 @@ def main():
                 if activate_button_in_modal(page, "Review"):
                     page.wait_for_timeout(2000)
                     continue
-                elif activate_button_in_modal(page, "Submit"):
-                    page.wait_for_timeout(3000)
+                elif page.locator('[role="dialog"] button:has-text("Submit")').count() > 0:
+                    # MANUAL CONFIRMATION REQUIRED before final submit
+                    print("\n⚠️  FINAL SUBMISSION CONFIRMATION")
+                    print("   The application is ready to be submitted.")
+                    print("   Type YES to submit, or NO to exit without submitting.")
+                    print()
+                    
+                    confirmation = input("Submit application? (YES/NO): ").strip().upper()
+                    
+                    if confirmation != "YES":
+                        print("\n❌ Submission cancelled by user")
+                        log_result(job_url, "CANCELLED", "User declined final submission", steps_completed)
+                        print("\nKeeping browser open for inspection...")
+                        input("Press Enter to close browser...")
+                        context.close()
+                        return
+                    
+                    print("\n✅ User confirmed - proceeding with submission...")
+                    
+                    if activate_button_in_modal(page, "Submit"):
+                        page.wait_for_timeout(3000)
                     
                     # Check for success
                     success_indicators = [
