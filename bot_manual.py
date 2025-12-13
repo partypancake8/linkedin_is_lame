@@ -33,6 +33,29 @@ ANSWER_BANK = {
     # Short text responses (safe, generic)
     'skills_summary': 'Strong background in software development with focus on automation and testing.',
     'why_interested': 'Interested in contributing to innovative projects and growing technical skills.',
+    
+    # Boolean answers for radio buttons (True = Yes, False = No)
+    'authorized_to_work': True,
+    'requires_sponsorship': False,
+    'willing_to_relocate': False,
+    'background_check_consent': True,
+    'drug_test_consent': True,
+    'over_18': True,
+    'legally_eligible': True,
+    
+    # Self-identification answers (voluntary disclosure)
+    # Gender: 'male', 'female', 'decline'
+    'gender': 'male',
+    
+    # Race/Ethnicity: Options vary, common ones include:
+    # 'white', 'black', 'hispanic', 'asian', 'native_american', 'pacific_islander', 'two_or_more', 'decline'
+    'race': 'white',
+    
+    # Veteran status: 'veteran', 'not_veteran', 'decline'
+    'veteran_status': 'not_veteran',
+    
+    # Disability status: 'yes_disability', 'no_disability', 'decline'
+    'disability_status': 'no_disability',
 }
 
 def log_result(job_url, status, reason="", steps_completed=0):
@@ -58,6 +81,35 @@ def human_delay(min_ms=300, max_ms=800):
     import random
     delay = random.uniform(min_ms, max_ms) / 1000
     time.sleep(delay)
+
+def normalize_text(text):
+    """Normalize text for keyword matching - lowercase, strip punctuation"""
+    if not text:
+        return ""
+    import string
+    # Lowercase and remove punctuation
+    text = text.lower()
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    # Collapse whitespace
+    return ' '.join(text.split())
+
+def normalize_option_text(text):
+    """Normalize dropdown option text for matching - removes filler words"""
+    if not text:
+        return ""
+    import string
+    # Lowercase
+    text = text.lower()
+    # Remove punctuation
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    # Collapse whitespace
+    text = ' '.join(text.split())
+    # Remove filler words
+    filler_words = ['weeks', 'months', 'please select', 'select one', 'choose', 'pick']
+    for filler in filler_words:
+        text = text.replace(filler, '')
+    # Re-collapse whitespace after removals
+    return ' '.join(text.split())
 
 def keyboard_fill_input(page, selector, value, label="field"):
     """Fill input using keyboard (more human-like)"""
@@ -278,10 +330,12 @@ def detect_text_fields_in_modal(page):
         
         # Fields to SKIP - these are auto-fillable or optional
         skip_patterns = [
-            'phone', 'mobile', 'telephone', 'cell',  # Phone fields
-            'email', 'e-mail',  # Email fields
-            'address', 'street', 'city', 'zip', 'postal',  # Address fields
+            'phone', 'mobile', 'telephone', 'cell', 'phone number',  # Phone fields
+            'email', 'e-mail', 'email address',  # Email fields
+            'address', 'street', 'city', 'zip', 'postal', 'country',  # Address fields
             'linkedin', 'website', 'url', 'portfolio',  # Social/web links
+            'first name', 'last name', 'full name',  # Name fields (auto-filled)
+            'prefix', 'suffix',  # Name prefix/suffix
         ]
         
         detected_fields = []
@@ -450,6 +504,532 @@ def resolve_field_answer(field_metadata, field_classification):
     # No confident match
     return None
 
+def detect_inline_validation_error(page, field_element):
+    """
+    Detect inline validation errors near a field.
+    Returns: (has_error: bool, error_text: str)
+    """
+    try:
+        # Check if field has aria-invalid
+        aria_invalid = field_element.get_attribute('aria-invalid')
+        if aria_invalid == 'true':
+            # Try to find error message
+            field_id = field_element.get_attribute('id') or ''
+            
+            # Look for aria-describedby error message
+            aria_describedby = field_element.get_attribute('aria-describedby')
+            if aria_describedby:
+                error_el = page.locator(f'#{aria_describedby}')
+                if error_el.count() > 0:
+                    error_text = error_el.first.inner_text().strip()
+                    if error_text:
+                        return (True, error_text)
+            
+            # Look for nearby error elements (common patterns)
+            error_selectors = [
+                f'[role="dialog"] [id="{field_id}-error"]',
+                f'[role="dialog"] .error-message',
+                f'[role="dialog"] .field-error',
+                f'[role="dialog"] [class*="error"][class*="text"]',
+            ]
+            
+            for selector in error_selectors:
+                error_el = page.locator(selector)
+                if error_el.count() > 0 and error_el.first.is_visible():
+                    error_text = error_el.first.inner_text().strip()
+                    if error_text:
+                        return (True, error_text)
+            
+            return (True, "Validation error (no error text found)")
+        
+        return (False, "")
+    except Exception as e:
+        return (False, "")
+
+def resolve_radio_question(page, group_name, question_text, option_count):
+    """
+    Resolve boolean radio question to True/False or None.
+    Also handles multi-option self-identification questions (gender, race, veteran, disability).
+    
+    Returns: (answer: bool|int|None, confidence: str, matched_key: str)
+    """
+    normalized = normalize_text(question_text)
+    
+    # BINARY QUESTIONS (2 options only) - Boolean True/False
+    if option_count == 2:
+        # Keyword mappings for boolean questions
+        # Format: (keywords_tuple): answer_bank_key
+        boolean_mappings = {
+            # Work authorization
+            ('authorized', 'work'): 'authorized_to_work',
+            ('legally', 'authorized'): 'authorized_to_work',
+            ('legal', 'right', 'work'): 'authorized_to_work',
+            ('work', 'authorization'): 'authorized_to_work',
+            
+            # Sponsorship
+            ('require', 'sponsorship'): 'requires_sponsorship',
+            ('need', 'sponsorship'): 'requires_sponsorship',
+            ('visa', 'sponsorship'): 'requires_sponsorship',
+            ('sponsorship', 'now', 'future'): 'requires_sponsorship',
+            
+            # Relocation
+            ('willing', 'relocate'): 'willing_to_relocate',
+            ('open', 'relocation'): 'willing_to_relocate',
+            ('relocate',): 'willing_to_relocate',
+            
+            # Background check
+            ('background', 'check'): 'background_check_consent',
+            ('criminal', 'background'): 'background_check_consent',
+            
+            # Drug test
+            ('drug', 'test'): 'drug_test_consent',
+            ('drug', 'screen'): 'drug_test_consent',
+            
+            # Age / legal eligibility
+            ('over', '18'): 'over_18',
+            ('18', 'years', 'age'): 'over_18',
+            ('legally', 'eligible'): 'legally_eligible',
+            ('legal', 'age'): 'over_18',
+        }
+        
+        # Try to match keywords
+        matched_key = None
+        for keywords, bank_key in boolean_mappings.items():
+            if all(kw in normalized for kw in keywords):
+                matched_key = bank_key
+                break
+        
+        if matched_key and matched_key in ANSWER_BANK:
+            answer = ANSWER_BANK[matched_key]
+            if isinstance(answer, bool):
+                return (answer, 'high', matched_key)
+    
+    # MULTI-OPTION QUESTIONS (3+ options) - Self-identification
+    elif option_count >= 3:
+        # Gender question (typically 3 options: Male, Female, Decline)
+        if any(kw in normalized for kw in ['gender', 'sex']):
+            if 'gender' in ANSWER_BANK:
+                gender_pref = ANSWER_BANK['gender'].lower()
+                # Map answer to option index
+                # Typical order: Male (0), Female (1), Decline (2)
+                gender_map = {
+                    'male': 0,
+                    'female': 1,
+                    'decline': 2,
+                }
+                if gender_pref in gender_map:
+                    return (gender_map[gender_pref], 'high', 'gender')
+        
+        # Race/Ethnicity question
+        if any(kw in normalized for kw in ['race', 'ethnicity', 'ethnic']):
+            if 'race' in ANSWER_BANK:
+                race_pref = ANSWER_BANK['race'].lower()
+                # Common pattern: last option is "Decline to answer"
+                if race_pref == 'decline':
+                    # Select last option (typically "Decline to answer")
+                    return (option_count - 1, 'high', 'race')
+                else:
+                    # If specific race selected, would need option matching
+                    # For now, default to decline if not explicitly "decline"
+                    return (option_count - 1, 'high', 'race')
+        
+        # Veteran status question
+        if any(kw in normalized for kw in ['veteran', 'military', 'armed forces']):
+            if 'veteran_status' in ANSWER_BANK:
+                veteran_pref = ANSWER_BANK['veteran_status'].lower()
+                # Typical order: I am a veteran (0), I am not a veteran (1), Decline (2)
+                veteran_map = {
+                    'veteran': 0,
+                    'not_veteran': 1,
+                    'decline': 2,
+                }
+                if veteran_pref in veteran_map:
+                    return (veteran_map[veteran_pref], 'high', 'veteran_status')
+        
+        # Disability status question
+        if any(kw in normalized for kw in ['disability', 'disabled', 'impairment']):
+            if 'disability_status' in ANSWER_BANK:
+                disability_pref = ANSWER_BANK['disability_status'].lower()
+                # Typical order: Yes I have disability (0), No disability (1), Decline (2)
+                disability_map = {
+                    'yes_disability': 0,
+                    'no_disability': 1,
+                    'decline': 2,
+                }
+                if disability_pref in disability_map:
+                    return (disability_map[disability_pref], 'high', 'disability_status')
+    
+    # No confident match
+    return (None, 'low', 'unmatched')
+
+def detect_radio_groups(page):
+    """
+    Detect and extract metadata for all radio groups in modal.
+    Returns list of radio group metadata dicts.
+    """
+    try:
+        radio_groups_data = []
+        processed_names = set()
+        
+        radios = page.locator('[role="dialog"] input[type="radio"]')
+        radio_count = radios.count()
+        
+        for i in range(radio_count):
+            radio = radios.nth(i)
+            name = radio.get_attribute('name')
+            
+            if not name or name in processed_names:
+                continue
+            
+            processed_names.add(name)
+            
+            # Get all radios in this group
+            group_radios = page.locator(f'[role="dialog"] input[type="radio"][name="{name}"]')
+            option_count = group_radios.count()
+            
+            # Check if already selected
+            is_checked = False
+            for j in range(option_count):
+                if group_radios.nth(j).is_checked():
+                    is_checked = True
+                    break
+            
+            if is_checked:
+                continue
+            
+            # Extract question text from label/legend/fieldset
+            question_text = ''
+            
+            # Try to find parent fieldset/legend
+            try:
+                parent_fieldset = radio.evaluate('''el => {
+                    let current = el;
+                    while (current && current.tagName !== 'FIELDSET') {
+                        current = current.parentElement;
+                    }
+                    if (current) {
+                        const legend = current.querySelector('legend');
+                        if (legend) return legend.textContent;
+                        const label = current.querySelector('label');
+                        if (label) return label.textContent;
+                    }
+                    return '';
+                }''')
+                if parent_fieldset:
+                    question_text = parent_fieldset.strip()
+            except:
+                pass
+            
+            # If no fieldset, try first radio's label
+            if not question_text:
+                radio_id = group_radios.first.get_attribute('id')
+                if radio_id:
+                    label = page.locator(f'[role="dialog"] label[for="{radio_id}"]')
+                    if label.count() > 0:
+                        question_text = label.first.inner_text().strip()
+            
+            # If still no question, try aria-label
+            if not question_text:
+                aria_label = radio.get_attribute('aria-label')
+                if aria_label:
+                    question_text = aria_label.strip()
+            
+            # Get option labels
+            option_labels = []
+            for j in range(option_count):
+                opt_radio = group_radios.nth(j)
+                opt_id = opt_radio.get_attribute('id')
+                if opt_id:
+                    opt_label = page.locator(f'[role="dialog"] label[for="{opt_id}"]')
+                    if opt_label.count() > 0:
+                        option_labels.append(opt_label.first.inner_text().strip())
+                    else:
+                        option_labels.append(f"Option {j+1}")
+                else:
+                    option_labels.append(f"Option {j+1}")
+            
+            radio_groups_data.append({
+                'name': name,
+                'question_text': question_text,
+                'option_count': option_count,
+                'option_labels': option_labels,
+                'radios': group_radios,
+            })
+        
+        return radio_groups_data
+    except Exception as e:
+        print(f"  ⚠️ Error detecting radio groups: {e}")
+        return []
+
+def detect_select_fields(page):
+    """
+    Detect <select> dropdowns in modal.
+    Returns list of select field metadata dicts.
+    """
+    try:
+        # Patterns to SKIP - these are auto-fillable
+        skip_patterns = [
+            'phone', 'mobile', 'telephone', 'country code', 'area code',  # Phone related
+            'email', 'e-mail', 'email address',  # Email related
+            'country', 'state', 'province', 'region',  # Location (often auto-filled)
+            'prefix', 'suffix',  # Name prefix/suffix
+            'first name', 'last name',  # Name fields
+        ]
+        
+        select_fields = []
+        selects = page.locator('[role="dialog"] select')
+        select_count = selects.count()
+        
+        for i in range(select_count):
+            select = selects.nth(i)
+            
+            # Skip if disabled or hidden
+            if not select.is_visible() or select.is_disabled():
+                continue
+            
+            # Get label
+            label_text = ''
+            select_id = select.get_attribute('id')
+            if select_id:
+                label = page.locator(f'[role="dialog"] label[for="{select_id}"]')
+                if label.count() > 0:
+                    label_text = label.first.inner_text().strip()
+            
+            # Get aria-label fallback
+            if not label_text:
+                aria_label = select.get_attribute('aria-label')
+                if aria_label:
+                    label_text = aria_label.strip()
+            
+            # If still no label, extract from parent container
+            if not label_text:
+                try:
+                    parent_text = select.evaluate("""el => {
+                        let p = el.parentElement;
+                        while (p && (!p.innerText || p.innerText.length < 10)) {
+                            p = p.parentElement;
+                        }
+                        return p ? p.innerText : '';
+                    }""")
+                    if parent_text:
+                        label_text = parent_text.strip()
+                except:
+                    pass
+            
+            # Check if this select should be skipped
+            should_skip = False
+            select_name = select.get_attribute('name') or ''
+            # Normalize and combine all identifying text (handles newlines, extra spaces)
+            text_to_check = normalize_text(f"{label_text} {select_name} {select_id}")
+            
+            for pattern in skip_patterns:
+                # Also normalize the pattern for consistent matching
+                normalized_pattern = normalize_text(pattern)
+                if normalized_pattern in text_to_check:
+                    should_skip = True
+                    print(f"  ⏭️  Skipping auto-fillable select: {label_text or select_name} (matched: {pattern})")
+                    break
+            
+            if should_skip:
+                continue
+            
+            # Focus the select to ensure lazy-loaded options populate
+            try:
+                select.focus()
+                human_delay(200, 400)
+            except:
+                pass
+            
+            # Get options (re-query after focus)
+            options = select.locator('option')
+            option_count = options.count()
+            option_texts = []
+            option_values = []
+            
+            for j in range(option_count):
+                opt = options.nth(j)
+                opt_text = opt.inner_text().strip()
+                opt_value = opt.get_attribute('value') or ''
+                if opt_text:  # Skip empty options
+                    option_texts.append(opt_text)
+                    option_values.append(opt_value)
+            
+            # Get currently selected value
+            current_value = select.input_value()
+            
+            select_fields.append({
+                'element': select,
+                'label': label_text,
+                'option_count': len(option_texts),
+                'option_texts': option_texts,
+                'option_values': option_values,
+                'current_value': current_value,
+            })
+        
+        return select_fields
+    except Exception as e:
+        print(f"  ⚠️ Error detecting select fields: {e}")
+        return []
+
+def resolve_select_answer(select_metadata):
+    """
+    Resolve select field to answer or None.
+    Only handles dropdowns with ≤5 options and known question types.
+    Self-identification fields (gender, race, veteran, disability) allowed up to 15 options.
+    
+    Returns: (resolved_index: int|None, confidence: str, matched_key: str)
+    """
+    label = select_metadata.get('label', '').lower()
+    option_count = select_metadata.get('option_count', 0)
+    option_texts = select_metadata.get('option_texts', [])
+    option_values = select_metadata.get('option_values', [])
+    
+    normalized_label = normalize_text(label)
+    
+    # Keyword mappings for select fields
+    select_mappings = {
+        # Work-related
+        ('notice', 'period'): 'notice_period_weeks',
+        ('start', 'date'): 'notice_period_weeks',
+        ('availability',): 'notice_period_weeks',
+        ('when', 'start'): 'notice_period_weeks',
+        
+        # Self-identification (if presented as dropdowns instead of radios)
+        ('gender',): 'gender',
+        ('sex',): 'gender',
+        ('race',): 'race',
+        ('ethnicity',): 'race',
+        ('ethnic',): 'race',
+        ('veteran',): 'veteran_status',
+        ('disability',): 'disability_status',
+        ('disabled',): 'disability_status',
+    }
+    
+    # Try to match keywords
+    matched_key = None
+    for keywords, bank_key in select_mappings.items():
+        if all(kw in normalized_label for kw in keywords):
+            matched_key = bank_key
+            break
+    
+    # Check option count limits (different for self-ID vs other fields)
+    is_self_id = matched_key in ['gender', 'race', 'veteran_status', 'disability_status']
+    max_options = 15 if is_self_id else 5
+    
+    if option_count > max_options:
+        return (None, 'low', 'too_many_options')
+    
+    # Keyword mappings for select fields
+    select_mappings = {
+        # Work-related
+        ('notice', 'period'): 'notice_period_weeks',
+        ('start', 'date'): 'notice_period_weeks',
+        ('availability',): 'notice_period_weeks',
+        ('when', 'start'): 'notice_period_weeks',
+        
+        # Self-identification (if presented as dropdowns instead of radios)
+        ('gender',): 'gender',
+        ('sex',): 'gender',
+        ('race',): 'race',
+        ('ethnicity',): 'race',
+        ('ethnic',): 'race',
+        ('veteran',): 'veteran_status',
+        ('disability',): 'disability_status',
+        ('disabled',): 'disability_status',
+    }
+    
+    # Try to match keywords
+    matched_key = None
+    for keywords, bank_key in select_mappings.items():
+        if all(kw in normalized_label for kw in keywords):
+            matched_key = bank_key
+            break
+    
+    if matched_key and matched_key in ANSWER_BANK:
+        expected_value = ANSWER_BANK[matched_key]
+        
+        # Handle self-identification fields (match by keyword in option text)
+        if matched_key in ['gender', 'race', 'veteran_status', 'disability_status']:
+            # Map answer bank value to option text keywords
+            if matched_key == 'gender':
+                gender_keywords = {
+                    'male': ['male', 'man'],
+                    'female': ['female', 'woman'],
+                    'decline': ['decline', 'prefer not', 'rather not', "don't wish", "dont wish"],
+                }
+                if expected_value in gender_keywords:
+                    for i, opt_text in enumerate(option_texts):
+                        opt_normalized = normalize_option_text(opt_text)
+                        # Use phrase matching for more precision
+                        for kw in gender_keywords[expected_value]:
+                            if normalize_option_text(kw) in opt_normalized:
+                                return (i, 'high', matched_key)
+                    # If no match found and it's decline, try last option
+                    if expected_value == 'decline' and len(option_texts) > 0:
+                        return (len(option_texts) - 1, 'medium', 'gender_last_option')
+            
+            elif matched_key == 'race':
+                # For race, if 'decline', find option with decline/prefer not keywords
+                if expected_value == 'decline':
+                    for i, opt_text in enumerate(option_texts):
+                        opt_normalized = normalize_option_text(opt_text)
+                        # More specific matching - must contain "decline" OR "prefer not" OR "rather not"
+                        if 'decline' in opt_normalized or 'prefer not' in opt_normalized or 'rather not' in opt_normalized or "dont wish" in opt_normalized:
+                            return (i, 'high', matched_key)
+                    # If no decline option found, select last option (often decline)
+                    if len(option_texts) > 0:
+                        return (len(option_texts) - 1, 'medium', 'race_last_option')
+                # For specific races, would need exact matching (not implemented)
+                return (None, 'low', 'race_specific_not_implemented')
+            
+            elif matched_key == 'veteran_status':
+                veteran_keywords = {
+                    'veteran': ['protected veteran', 'i am', 'i identify', 'yes'],
+                    'not_veteran': ['not a', 'not protected', 'i am not', 'no'],
+                    'decline': ['decline', 'prefer not', 'rather not', "don't wish", "dont wish"],
+                }
+                if expected_value in veteran_keywords:
+                    for i, opt_text in enumerate(option_texts):
+                        opt_normalized = normalize_option_text(opt_text)
+                        for kw in veteran_keywords[expected_value]:
+                            if normalize_option_text(kw) in opt_normalized:
+                                return (i, 'high', matched_key)
+                    # If no match and it's decline, try last option
+                    if expected_value == 'decline' and len(option_texts) > 0:
+                        return (len(option_texts) - 1, 'medium', 'veteran_last_option')
+            
+            elif matched_key == 'disability_status':
+                disability_keywords = {
+                    'yes_disability': ['yes', 'i have', 'have a disability', 'have a'],
+                    'no_disability': ['no', 'not have', "don't have", 'do not have'],
+                    'decline': ['decline', 'prefer not', 'rather not', "don't wish", "dont wish"],
+                }
+                if expected_value in disability_keywords:
+                    for i, opt_text in enumerate(option_texts):
+                        opt_normalized = normalize_option_text(opt_text)
+                        for kw in disability_keywords[expected_value]:
+                            if normalize_option_text(kw) in opt_normalized:
+                                return (i, 'high', matched_key)
+                    # If no match and it's decline, try last option
+                    if expected_value == 'decline' and len(option_texts) > 0:
+                        return (len(option_texts) - 1, 'medium', 'disability_last_option')
+            
+            # If we got here, couldn't match self-identification option
+            return (None, 'low', 'self_id_option_not_matched')
+        
+        # Handle numeric fields (notice period, etc.)
+        # Try to find matching option
+        for i, opt_text in enumerate(option_texts):
+            opt_normalized = normalize_option_text(opt_text)
+            # Match if expected value appears in option text
+            if str(expected_value) in opt_normalized:
+                return (i, 'high', matched_key)
+        
+        # If no exact match, return None (don't guess)
+        return (None, 'low', 'no_matching_option')
+    
+    return (None, 'low', 'unmatched')
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python bot_manual.py <job_url>")
@@ -580,34 +1160,111 @@ def main():
                 except Exception as e:
                     print(f"  ⚠️ Resume upload failed: {e}")
             
-            # Handle radio buttons using keyboard
-            radio_groups = {}
-            radios = page.locator('input[type="radio"]')
-            radio_count = radios.count()
-            print(f"  Found {radio_count} radio buttons")
+            # Handle radio buttons with semantic resolution
+            radio_groups_data = detect_radio_groups(page)
+            print(f"  Found {len(radio_groups_data)} radio group(s)")
             
-            for i in range(radio_count):
+            radio_needs_pause = False
+            for group_data in radio_groups_data:
                 try:
-                    radio = radios.nth(i)
-                    name = radio.get_attribute("name") or f"radio_{i}"
+                    group_name = group_data['name']
+                    question_text = group_data['question_text']
+                    option_count = group_data['option_count']
+                    option_labels = group_data['option_labels']
+                    group_radios = group_data['radios']
                     
-                    if name not in radio_groups:
-                        radio_groups[name] = True
+                    print(f"\n  Radio Group: {group_name}")
+                    print(f"    Question: {question_text}")
+                    print(f"    Options ({option_count}): {', '.join(option_labels)}")
+                    
+                    # Resolve question
+                    answer, confidence, matched_key = resolve_radio_question(page, group_name, question_text, option_count)
+                    
+                    print(f"    Matched Key: {matched_key}")
+                    print(f"    Confidence: {confidence}")
+                    
+                    if answer is not None and confidence == 'high':
+                        # Determine target index based on answer type
+                        if isinstance(answer, bool):
+                            # Binary question: True=0 (Yes), False=1 (No)
+                            target_index = 0 if answer else 1
+                            print(f"    Resolved Answer: {'Yes' if answer else 'No'} (selecting option {target_index + 1})")
+                        elif isinstance(answer, int):
+                            # Multi-option question: answer is the index
+                            target_index = answer
+                            print(f"    Resolved Answer: Option {target_index + 1} (index {target_index})")
+                        else:
+                            # Unexpected answer type
+                            print(f"    ⚠️ Unexpected answer type: {type(answer)}")
+                            radio_needs_pause = True
+                            continue
                         
-                        # Check if any radio in this group is already selected
-                        group_radios = page.locator(f'input[type="radio"][name="{name}"]')
-                        is_checked = False
-                        for j in range(group_radios.count()):
-                            if group_radios.nth(j).is_checked():
-                                is_checked = True
-                                break
+                        # Validate index is within bounds
+                        if target_index >= option_count:
+                            print(f"    ⚠️ Target index {target_index} out of bounds (only {option_count} options)")
+                            radio_needs_pause = True
+                            continue
                         
-                        if not is_checked:
-                            # Use keyboard to select
-                            keyboard_select_radio(page, name, f"radio group '{name}'")
+                        target_radio = group_radios.nth(target_index)
+                        target_radio.focus()
+                        human_delay(300, 500)
+                        page.keyboard.press("Space")
+                        human_delay(200, 400)
+                        
+                        print(f"    ✓ Selected option {target_index + 1}")
+                        
+                        # Log to file
+                        log_entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "job_url": job_url,
+                            "state": "RADIO_RESOLUTION",
+                            "group_name": group_name,
+                            "question": question_text,
+                            "matched_key": matched_key,
+                            "answer": answer,
+                            "selected_option": option_labels[target_index] if target_index < len(option_labels) else f"Option {target_index + 1}",
+                            "confidence": confidence,
+                        }
+                        with open("log.jsonl", "a") as f:
+                            f.write(json.dumps(log_entry) + "\n")
+                    else:
+                        # Low confidence - pause
+                        print(f"    ⚠️ Low confidence - cannot resolve question")
+                        radio_needs_pause = True
+                        
+                        # Log unresolved radio
+                        log_entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "job_url": job_url,
+                            "state": "RADIO_UNRESOLVED",
+                            "group_name": group_name,
+                            "question": question_text,
+                            "option_count": option_count,
+                            "confidence": confidence,
+                            "reason": matched_key,
+                        }
+                        with open("log.jsonl", "a") as f:
+                            f.write(json.dumps(log_entry) + "\n")
                             
                 except Exception as e:
-                    print(f"  ⚠️ Error with radio button {i}: {e}")
+                    print(f"  ⚠️ Error with radio group: {e}")
+                    radio_needs_pause = True
+            
+            # If any radio needs pause, stop here
+            if radio_needs_pause:
+                print("\n⏸️  PAUSED - Unresolved radio button question(s)")
+                print("   Some questions could not be answered with confidence")
+                print("   Options:")
+                print("     1. Press Enter to SKIP this application (recommended)")
+                print("     2. Manually answer the questions and continue")
+                print()
+                
+                choice = input("Press Enter to skip application: ").strip()
+                
+                print("\n⚠️ Skipping application - unresolved radio questions")
+                log_result(job_url, "SKIPPED", "Radio questions with low confidence", steps_completed)
+                context.close()
+                return
             
             # Handle checkboxes using keyboard (only consent/agreement)
             checkboxes = page.locator('input[type="checkbox"]')
@@ -632,6 +1289,132 @@ def main():
                                 print(f"  ✓ Checked consent checkbox (keyboard)")
                 except Exception as e:
                     print(f"  ⚠️ Error with checkbox: {e}")
+            
+            # Handle select dropdowns with semantic resolution
+            select_fields = detect_select_fields(page)
+            print(f"  Found {len(select_fields)} select dropdown(s)")
+            
+            select_needs_pause = False
+            for idx, select_data in enumerate(select_fields, 1):
+                try:
+                    label = select_data['label']
+                    option_count = select_data['option_count']
+                    option_texts = select_data['option_texts']
+                    current_value = select_data['current_value']
+                    element = select_data['element']
+                    
+                    print(f"\n  Select Field {idx}: {label}")
+                    print(f"    Options ({option_count}): {', '.join(option_texts[:5])}{'...' if option_count > 5 else ''}")
+                    print(f"    Current Value: {current_value}")
+                    
+                    # Resolve answer (returns index, not value)
+                    answer_index, confidence, matched_key = resolve_select_answer(select_data)
+                    
+                    print(f"    Matched Key: {matched_key}")
+                    print(f"    Confidence: {confidence}")
+                    
+                    # Tightened pause rules:
+                    # - Self-ID fields (gender, race, veteran, disability): Allow medium OR high
+                    # - Work/logistics fields: Require high only
+                    self_id_keys = {'gender', 'race', 'veteran_status', 'disability_status'}
+                    can_proceed = (
+                        answer_index is not None and
+                        (confidence == 'high' or (confidence == 'medium' and matched_key in self_id_keys))
+                    )
+                    
+                    if can_proceed:
+                        print(f"    Resolved Answer: Index {answer_index}")
+                        
+                        # Capture value before selection
+                        previous_value = element.input_value()
+                        
+                        # Select option using keyboard-first approach
+                        try:
+                            element.focus()
+                            human_delay(200, 300)
+                            
+                            # Press ArrowDown to navigate to target index
+                            for _ in range(answer_index):
+                                page.keyboard.press("ArrowDown")
+                                human_delay(100, 200)
+                            
+                            # Press Enter to select
+                            page.keyboard.press("Enter")
+                            human_delay(300, 500)
+                            
+                            # Verify selection succeeded
+                            new_value = element.input_value()
+                            if new_value == previous_value:
+                                # Keyboard selection failed - try fallback
+                                print(f"    ⚠️ Keyboard selection failed, using fallback")
+                                element.select_option(index=answer_index)
+                                human_delay(200, 400)
+                                
+                                # Verify again
+                                final_value = element.input_value()
+                                if final_value == previous_value:
+                                    print(f"    ⚠️ Fallback selection also failed - pausing")
+                                    select_needs_pause = True
+                                else:
+                                    print(f"    ✓ Fallback selection succeeded")
+                            else:
+                                print(f"    ✓ Keyboard selection succeeded")
+                        except Exception as selection_error:
+                            print(f"    ⚠️ Selection error: {selection_error}")
+                            select_needs_pause = True
+                        
+                        # Log to file
+                        log_entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "job_url": job_url,
+                            "state": "SELECT_RESOLUTION",
+                            "label": label,
+                            "matched_key": matched_key,
+                            "selected_index": answer_index,
+                            "confidence": confidence,
+                        }
+                        with open("log.jsonl", "a") as f:
+                            f.write(json.dumps(log_entry) + "\n")
+                    else:
+                        # Low/medium confidence for work field - pause
+                        if confidence == 'medium' and matched_key not in self_id_keys:
+                            print(f"    ⚠️ Medium confidence for work field - pausing")
+                        else:
+                            print(f"    ⚠️ Low confidence - cannot resolve dropdown")
+                        select_needs_pause = True
+                        
+                        # Log unresolved select
+                        log_entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "job_url": job_url,
+                            "state": "SELECT_UNRESOLVED",
+                            "label": label,
+                            "option_count": option_count,
+                            "confidence": confidence,
+                            "reason": matched_key,
+                        }
+                        with open("log.jsonl", "a") as f:
+                            f.write(json.dumps(log_entry) + "\n")
+                            
+                except Exception as e:
+                    print(f"  ⚠️ Error with select field: {e}")
+                    select_needs_pause = True
+            
+            # If any select needs pause, stop here
+            if select_needs_pause:
+                print("\n⏸️  PAUSED - Unresolved select dropdown(s)")
+                print("   Some dropdowns could not be filled with confidence")
+                print("   Options:")
+                print("     1. Press Enter to SKIP this application (recommended)")
+                print("     2. Manually select values and continue")
+                print()
+                
+                choice = input("Press Enter to skip application: ").strip()
+                
+                print("\n⚠️ Skipping application - unresolved select fields")
+                log_result(job_url, "SKIPPED", "Select fields with low confidence", steps_completed)
+                context.close()
+                return
             
             page.wait_for_timeout(500)
             
@@ -701,6 +1484,28 @@ def main():
                             page.keyboard.type(value_to_type, delay=random.randint(50, 150))
                             time.sleep(0.3)
                             print(f"     ✓ Typed '{value_to_type}'")
+                            
+                            # Check for inline validation errors after typing
+                            time.sleep(0.5)  # Give validation time to trigger
+                            has_error, error_text = detect_inline_validation_error(page, field['element'])
+                            
+                            if has_error:
+                                print(f"     ❌ Validation error detected: {error_text}")
+                                needs_pause = True
+                                
+                                # Log validation error
+                                validation_log = {
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "job_url": job_url,
+                                    "state": "VALIDATION_ERROR",
+                                    "field_label": field_info['label'],
+                                    "field_type": field_info['input_type'],
+                                    "typed_value": value_to_type,
+                                    "error_text": error_text,
+                                }
+                                with open("log.jsonl", "a") as f:
+                                    f.write(json.dumps(validation_log) + "\n")
+                            
                         except Exception as e:
                             print(f"     ⚠️ Error typing: {e}")
                             needs_pause = True
