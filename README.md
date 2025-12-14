@@ -11,6 +11,37 @@ Modular LinkedIn Easy Apply automation using keyboard-only navigation, semantic 
 - **Uploads resume** when file input detected
 - **Requires manual confirmation** before final submission (prevents accidental applications)
 
+## Dev Test Speed Mode
+
+For faster local testing, use command-line flags to enable speed modes:
+
+```bash
+# Standard speed mode (40-50% faster, 1.5x-2x speed)
+./run.sh --speed dev "https://www.linkedin.com/jobs/view/123456789/"
+
+# Super speed mode (70-80% faster, 3x-5x speed)
+./run.sh --speed super "https://www.linkedin.com/jobs/view/123456789/"
+
+# Production mode (default, no flag needed)
+./run.sh "https://www.linkedin.com/jobs/view/123456789/"
+```
+
+⚠️ **Production use**: Run without `--speed` flag (default, safest)
+
+- **--speed dev**: Balanced speed increase, good for general testing
+- **--speed super**: Maximum safe speed without appearing bot-like, best for rapid iteration
+
+Both modes maintain human-like randomization patterns to avoid detection.
+
+Alternatively, you can still set speed modes in `linkedin_easy_apply/config.py`:
+
+```python
+DEV_TEST_SPEED = True   # 40-50% faster
+SUPER_DEV_SPEED = True  # 70-80% faster (overrides DEV_TEST_SPEED)
+```
+
+Command-line flags override config file settings.
+
 ## Setup
 
 1. **Install dependencies:**
@@ -53,7 +84,14 @@ Modular LinkedIn Easy Apply automation using keyboard-only navigation, semantic 
 Run the bot with a job URL:
 
 ```bash
+# Production speed (default, safest)
 ./run.sh "https://www.linkedin.com/jobs/view/123456789/"
+
+# Dev test speed (1.5x-2x faster)
+./run.sh --speed dev "https://www.linkedin.com/jobs/view/123456789/"
+
+# Super dev speed (3x-5x faster)
+./run.sh --speed super "https://www.linkedin.com/jobs/view/123456789/"
 ```
 
 Or using Python directly:
@@ -61,6 +99,8 @@ Or using Python directly:
 ```bash
 source venv/bin/activate
 python -m linkedin_easy_apply.main "https://www.linkedin.com/jobs/view/123456789/"
+python -m linkedin_easy_apply.main --speed dev "https://www.linkedin.com/jobs/view/123456789/"
+python -m linkedin_easy_apply.main --speed super "https://www.linkedin.com/jobs/view/123456789/"
 ```
 
 ### What Happens

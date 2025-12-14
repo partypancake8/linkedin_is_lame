@@ -8,6 +8,7 @@ import sys
 import json
 import time
 import random
+import argparse
 from datetime import datetime, timezone
 
 # Local imports
@@ -24,14 +25,75 @@ from linkedin_easy_apply.interaction.keyboard import keyboard_navigate_and_click
 from linkedin_easy_apply.interaction.buttons import activate_button_in_modal, wait_for_easy_apply_modal
 from linkedin_easy_apply.utils.logging import log_result
 from linkedin_easy_apply.utils.timing import human_delay
+import linkedin_easy_apply.config as config
+
+
+def format_elapsed_time(seconds):
+    """Format elapsed time in human-readable format"""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins}m {secs}s"
+    else:
+        hours = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        return f"{hours}h {mins}m"
+
+
+def log_with_time(start_time, *args, **kwargs):
+    """Log result with elapsed time display"""
+    elapsed = time.time() - start_time
+    print(f"⏱️  Total time: {format_elapsed_time(elapsed)}")
+    log_result(*args, **kwargs)
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python main.py <job_url>")
-        sys.exit(1)
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description='LinkedIn Easy Apply Bot - Automated application submission',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Speed Modes:
+  --speed dev       40-50%% faster (1.5x-2x speed) - balanced testing
+  --speed super     70-80%% faster (3x-5x speed) - maximum safe speed
+  (default)         Production speed - safest, most human-like
+
+Examples:
+  python -m linkedin_easy_apply.main "https://linkedin.com/jobs/view/123456789/"
+  python -m linkedin_easy_apply.main --speed dev "https://linkedin.com/jobs/view/123456789/"
+  python -m linkedin_easy_apply.main --speed super "https://linkedin.com/jobs/view/123456789/"
+        """
+    )
+    parser.add_argument('job_url', help='LinkedIn job URL to apply to')
+    parser.add_argument(
+        '--speed',
+        choices=['dev', 'super'],
+        help='Speed mode: dev (1.5x-2x) or super (3x-5x)'
+    )
     
-    job_url = sys.argv[1]
+    args = parser.parse_args()
+    job_url = args.job_url
+    
+    # Configure speed mode based on command-line flag
+    if args.speed == 'dev':
+        config.DEV_TEST_SPEED = True
+        config.SUPER_DEV_SPEED = False
+        print("⚡ DEV_TEST_SPEED enabled (1.5x-2x speed)\n")
+    elif args.speed == 'super':
+        config.DEV_TEST_SPEED = False
+        config.SUPER_DEV_SPEED = True
+        print("⚡⚡ SUPER_DEV_SPEED enabled (3x-5x speed)\n")
+    else:
+        config.DEV_TEST_SPEED = False
+        config.SUPER_DEV_SPEED = False
+    
+    # Rebuild TIMING dict after config changes
+    config.TIMING = config.get_active_timing()
+    
+    # Start timer
+    start_time = time.time()
     steps_completed = 0
     
     print("="*60)
@@ -75,6 +137,7 @@ def main():
     # Wait for modal to appear
     if not wait_for_easy_apply_modal(page):
         print("❌ Easy Apply modal not detected")
+        print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
         log_result(job_url, "FAILED", "Modal not detected after manual click", steps_completed)
         context.close()
         return
@@ -111,6 +174,7 @@ def main():
     
     if resume_upload == 0 and next_btn == 0 and submit_btn == 0 and review_btn == 0:
         print("\n❌ No form elements detected")
+        print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
         log_result(job_url, "FAILED", "No form elements found in modal", steps_completed)
         context.close()
         return
@@ -204,9 +268,9 @@ def main():
                     else:
                         # Focus and select using Space
                         target_radio.focus()
-                        human_delay(300, 500)
+                        human_delay(config.TIMING["focus_delay_min"], config.TIMING["focus_delay_max"])
                         page.keyboard.press("Space")
-                        human_delay(200, 400)
+                        human_delay(config.TIMING["key_delay_min"], config.TIMING["key_delay_max"])
                         
                         # Verify selection worked
                         if target_radio.is_checked():
@@ -221,7 +285,7 @@ def main():
                                     label = page.locator(f'[role="dialog"] label[for="{radio_id}"]')
                                     if label.count() > 0:
                                         label.first.click()
-                                        human_delay(200, 400)
+                                        human_delay(config.TIMING["key_delay_min"], config.TIMING["key_delay_max"])
                                         if target_radio.is_checked():
                                             print(f"    ✓ Label click succeeded")
                                         else:
@@ -275,10 +339,14 @@ def main():
                 radio_needs_pause = True
         
         if radio_needs_pause:
+            elapsed = time.time() - start_time
             print("\n⏸️  PAUSED - Unresolved radio button questions")
+            print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
             print("   Press Enter to SKIP this application")
             input()
+            
             print("\n⚠️ Skipping application")
+            print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
             log_result(job_url, "SKIPPED", "Radio questions with low confidence", steps_completed)
             context.close()
             return
@@ -292,22 +360,51 @@ def main():
             for i in range(checkbox_count):
                 checkbox = checkboxes.nth(i)
                 try:
-                    if not checkbox.is_checked():
-                        # Try to get label
-                        checkbox_id = checkbox.get_attribute('id')
-                        label_text = ''
-                        if checkbox_id:
-                            label = page.locator(f'label[for="{checkbox_id}"]')
-                            if label.count() > 0:
-                                label_text = label.first.inner_text().strip().lower()
+                    is_already_checked = checkbox.is_checked()
+                    
+                    # Try to get label
+                    checkbox_id = checkbox.get_attribute('id')
+                    label_text = ''
+                    if checkbox_id:
+                        label = page.locator(f'label[for="{checkbox_id}"]')
+                        if label.count() > 0:
+                            label_text = label.first.inner_text().strip()
+                    
+                    print(f"    Checkbox {i+1}: {'[✓]' if is_already_checked else '[ ]'} {label_text[:60] if label_text else 'no label'}")
+                    
+                    if not is_already_checked:
+                        label_lower = label_text.lower()
                         
-                        # Only check boxes that look like consent/agreement
-                        if any(word in label_text for word in ["agree", "consent", "terms", "acknowledge", "confirm"]):
+                        # Categorize checkbox
+                        is_consent = any(word in label_lower for word in ["agree", "consent", "terms", "acknowledge", "confirm"])
+                        is_communication = any(word in label_lower for word in ["email", "communication", "updates", "marketing", "newsletter", "inform", "receive"])
+                        
+                        # Check if it's marked as required
+                        is_required = False
+                        if checkbox_id:
+                            # Check if the fieldset or label has "required" indicator
+                            required_marker = page.locator(f'label[for="{checkbox_id}"] :has-text("*")').count() > 0
+                            aria_required = checkbox.get_attribute('aria-required') == 'true'
+                            is_required = required_marker or "required" in label_lower or aria_required
+                        
+                        if is_consent or is_required:
+                            # Always check consent and required checkboxes
                             checkbox.focus()
-                            human_delay(200, 400)
+                            human_delay(config.TIMING["focus_delay_min"], config.TIMING["focus_delay_max"])
                             page.keyboard.press("Space")
-                            human_delay(200, 400)
-                            print(f"  ✓ Checked consent checkbox (keyboard)")
+                            human_delay(config.TIMING["key_delay_min"], config.TIMING["key_delay_max"])
+                            print(f"      → Checked (consent/required)")
+                        elif is_communication:
+                            # Leave marketing/communication checkboxes UNCHECKED (opt-out by default)
+                            print(f"      → Skipped (marketing/communication)")
+                        else:
+                            # Unknown checkbox - CHECK IT to avoid blocking submission
+                            # Most unknown checkboxes are required for form submission
+                            print(f"      → Checking (unknown - assuming required to avoid blocking)")
+                            checkbox.focus()
+                            human_delay(config.TIMING["focus_delay_min"], config.TIMING["focus_delay_max"])
+                            page.keyboard.press("Space")
+                            human_delay(config.TIMING["key_delay_min"], config.TIMING["key_delay_max"])
                 except Exception as e:
                     print(f"  ⚠️ Error with checkbox: {e}")
         
@@ -370,7 +467,7 @@ def main():
                                     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                                     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                                 }}""")
-                                human_delay(300, 500)
+                                human_delay(config.TIMING["dropdown_open_min"], config.TIMING["dropdown_open_max"])
                                 
                                 # Verify selection - check if current value matches target
                                 new_value = element.input_value()
@@ -388,7 +485,7 @@ def main():
                         try:
                             print(f"    Attempting Strategy 2: Playwright select_option by index")
                             element.select_option(index=answer_index)
-                            human_delay(300, 500)
+                            human_delay(config.TIMING["dropdown_open_min"], config.TIMING["dropdown_open_max"])
                             
                             # Verify selection - check if value changed from previous
                             new_value = element.input_value()
@@ -407,29 +504,29 @@ def main():
                         try:
                             print(f"    Attempting Strategy 3: Keyboard navigation")
                             element.focus()
-                            human_delay(200, 300)
+                            human_delay(config.TIMING["dropdown_verify_min"], config.TIMING["dropdown_verify_max"])
                             
                             # Attempt to open dropdown using Space
                             page.keyboard.press("Space")
-                            human_delay(300, 500)
+                            human_delay(config.TIMING["dropdown_open_min"], config.TIMING["dropdown_open_max"])
                             
                             # Fallback: some dropdowns require ArrowUp to open
                             page.keyboard.press("ArrowUp")
-                            human_delay(300, 500)
+                            human_delay(config.TIMING["dropdown_open_min"], config.TIMING["dropdown_open_max"])
                             
                             # Reset to top by pressing ArrowUp multiple times
                             for _ in range(option_count + 2):
                                 page.keyboard.press("ArrowUp")
-                                human_delay(50, 100)
+                                human_delay(config.TIMING["dropdown_nav_min"], config.TIMING["dropdown_nav_max"])
                             
                             # Navigate down to target index
                             for _ in range(answer_index):
                                 page.keyboard.press("ArrowDown")
-                                human_delay(100, 150)
+                                human_delay(config.TIMING["dropdown_verify_min"], config.TIMING["dropdown_verify_max"])
                             
                             # Press Enter to select
                             page.keyboard.press("Enter")
-                            human_delay(400, 600)
+                            human_delay(config.TIMING["dropdown_close_min"], config.TIMING["dropdown_close_max"])
                             
                             # Verify selection - check if value changed from previous
                             new_value = element.input_value()
@@ -449,7 +546,7 @@ def main():
                             print(f"    Attempting Strategy 4: Click-based ARIA dropdown")
                             # Click the select element to open dropdown
                             element.click()
-                            human_delay(300, 500)
+                            human_delay(config.TIMING["dropdown_open_min"], config.TIMING["dropdown_open_max"])
                             
                             # Try to find and click the option by visible text
                             # Look for option within modal dialog
@@ -458,7 +555,7 @@ def main():
                             
                             if option_locator.count() > 0:
                                 option_locator.click()
-                                human_delay(400, 600)
+                                human_delay(config.TIMING["dropdown_close_min"], config.TIMING["dropdown_close_max"])
                                 
                                 # Verify selection - check if value changed from previous
                                 new_value = element.input_value()
@@ -523,10 +620,14 @@ def main():
                 select_needs_pause = True
         
         if select_needs_pause:
+            elapsed = time.time() - start_time
             print("\n⏸️  PAUSED - Unresolved select dropdown fields")
+            print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
             print("   Press Enter to SKIP this application")
             input()
+            
             print("\n⚠️ Skipping application")
+            print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
             log_result(job_url, "SKIPPED", "Select fields with low confidence", steps_completed)
             context.close()
             return
@@ -654,7 +755,9 @@ def main():
             
             if any_unresolved:
                 # PAUSE FOR HUMAN INSPECTION
+                elapsed = time.time() - start_time
                 print(f"\n⏸️  PAUSED - {field_count} field(s) detected, some unresolved")
+                print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
                 print("   Some fields could not be auto-filled")
                 print("   Options:")
                 print("     1. Press Enter to SKIP this application (recommended)")
@@ -664,6 +767,7 @@ def main():
                 choice = input("Press Enter to skip application: ").strip()
                 
                 print("\n⚠️ Skipping application - unresolved fields present")
+                print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
                 log_result(job_url, "SKIPPED", "Text fields with unresolved answers", steps_completed)
                 context.close()
                 return
@@ -679,15 +783,18 @@ def main():
             print("✅ This is our target - ready to submit via keyboard!")
             
             # MANUAL CONFIRMATION REQUIRED
+            elapsed = time.time() - start_time
             print("\n⚠️  FINAL SUBMISSION CONFIRMATION")
+            print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
             print("   The application is ready to be submitted.")
             print("   Type YES to submit, or NO to exit without submitting.")
             print()
             
-            confirmation = input("Submit application? (YES/NO): ").strip().upper()
+            confirmation = input("Submit application? (Y/N): ").strip().upper()
             
-            if confirmation != "YES":
+            if confirmation not in ["Y", "YES"]:
                 print("\n❌ Submission cancelled by user")
+                print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
                 log_result(job_url, "CANCELLED", "User declined final submission", steps_completed)
                 print("\nKeeping browser open for inspection...")
                 input("Press Enter to close browser...")
@@ -715,9 +822,11 @@ def main():
                 
                 if success:
                     print("\n✅ APPLICATION SUBMITTED SUCCESSFULLY!")
+                    print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
                     log_result(job_url, "SUCCESS", "Application submitted (keyboard)", steps_completed + 1)
                 else:
                     print("\n⚠️ Submit pressed but success not confirmed")
+                    print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
                     log_result(job_url, "SUCCESS", "Submit pressed (unconfirmed)", steps_completed + 1)
                 
                 print("\nKeeping browser open for inspection...")
@@ -725,8 +834,20 @@ def main():
                 context.close()
                 return
             else:
-                print("⚠️ Could not activate Submit button")
-                log_result(job_url, "FAILED", "Submit button not accessible", steps_completed)
+                elapsed = time.time() - start_time
+                print("\n⏸️  PAUSED - Submit button not accessible")
+                print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
+                print("   The Submit button may be disabled or not found")
+                print("   Press Enter to skip or manually investigate")
+                print()
+                
+                input("Press Enter to skip application: ")
+                
+                print("\n⚠️ Skipping application - Submit button not accessible")
+                print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                log_result(job_url, "SKIPPED", "Submit button not accessible", steps_completed)
+                print("\nKeeping browser open for inspection...")
+                input("Press Enter to close browser...")
                 context.close()
                 return
         
@@ -741,8 +862,27 @@ def main():
                 # Continue to next iteration
                 continue
             else:
-                print("⚠️ Could not activate Next button")
-                log_result(job_url, "FAILED", "Next button not accessible", steps_completed)
+                # Next button not clickable (likely disabled due to validation)
+                elapsed = time.time() - start_time
+                print("\n⏸️  PAUSED - Next button not accessible")
+                print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
+                print("   The Next button may be disabled due to:")
+                print("     - Required field not filled")
+                print("     - Required checkbox not checked")
+                print("     - Validation error")
+                print()
+                print("   Options:")
+                print("     1. Press Enter to SKIP this application")
+                print("     2. Manually fix the issue and continue")
+                print()
+                
+                input("Press Enter to skip application: ")
+                
+                print("\n⚠️ Skipping application - Next button not accessible")
+                print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                log_result(job_url, "SKIPPED", "Next button not accessible", steps_completed)
+                print("\nKeeping browser open for inspection...")
+                input("Press Enter to close browser...")
                 context.close()
                 return
         
@@ -756,15 +896,18 @@ def main():
                 continue
             elif page.locator('[role="dialog"] button:has-text("Submit")').count() > 0:
                 # MANUAL CONFIRMATION REQUIRED before final submit
+                elapsed = time.time() - start_time
                 print("\n⚠️  FINAL SUBMISSION CONFIRMATION")
+                print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
                 print("   The application is ready to be submitted.")
                 print("   Type YES to submit, or NO to exit without submitting.")
                 print()
                 
-                confirmation = input("Submit application? (YES/NO): ").strip().upper()
+                confirmation = input("Submit application? (Y/N): ").strip().upper()
                 
-                if confirmation != "YES":
+                if confirmation not in ["Y", "YES"]:
                     print("\n❌ Submission cancelled by user")
+                    print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
                     log_result(job_url, "CANCELLED", "User declined final submission", steps_completed)
                     print("\nKeeping browser open for inspection...")
                     input("Press Enter to close browser...")
@@ -791,9 +934,11 @@ def main():
                 
                 if success:
                     print("\n✅ APPLICATION SUBMITTED SUCCESSFULLY!")
+                    print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
                     log_result(job_url, "SUCCESS", "Application submitted (multi-step)", steps_completed + 1)
                 else:
                     print("\n⚠️ Submit pressed but success not confirmed")
+                    print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
                     log_result(job_url, "SUCCESS", "Submit pressed (unconfirmed)", steps_completed + 1)
                 
                 print("\nKeeping browser open for inspection...")
@@ -801,19 +946,33 @@ def main():
                 context.close()
                 return
             else:
-                print("⚠️ Could not activate Review or Submit button")
-                log_result(job_url, "FAILED", "Review/Submit button not accessible", steps_completed)
+                elapsed = time.time() - start_time
+                print("\n⏸️  PAUSED - Review/Submit button not accessible")
+                print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
+                print("   Could not find or activate Review or Submit button")
+                print("   Press Enter to skip or manually investigate")
+                print()
+                
+                input("Press Enter to skip application: ")
+                
+                print("\n⚠️ Skipping application - Review/Submit button not accessible")
+                print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                log_result(job_url, "SKIPPED", "Review/Submit button not accessible", steps_completed)
+                print("\nKeeping browser open for inspection...")
+                input("Press Enter to close browser...")
                 context.close()
                 return
         
         elif state == "SUBMITTED":
             print("\n✅ Application already submitted!")
+            print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
             log_result(job_url, "SUCCESS", "Application confirmed submitted", steps_completed)
             context.close()
             return
         
         elif state == "ERROR":
             print("\n❌ Unexpected state - cannot determine next action")
+            print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
             log_result(job_url, "FAILED", "Unknown state detected", steps_completed)
             print("\nKeeping browser open for inspection...")
             input("Press Enter to close browser...")
@@ -827,11 +986,13 @@ def main():
         
         else:
             print(f"\n⚠️ Unhandled state: {state}")
+            print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
             log_result(job_url, "FAILED", f"Unhandled state: {state}", steps_completed)
             context.close()
             return
     
     print("\n⚠️ Max steps reached without completion")
+    print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
     log_result(job_url, "FAILED", "Max steps reached", steps_completed)
     context.close()
 
