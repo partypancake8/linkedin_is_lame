@@ -28,6 +28,17 @@ from linkedin_easy_apply.utils.timing import human_delay
 import linkedin_easy_apply.config as config
 
 
+# Skip reason constants - used for structured violation tracking
+SKIP_UNRESOLVED_FIELD = "unresolved_field"
+SKIP_LOW_CONFIDENCE = "low_confidence"
+SKIP_UNEXPECTED_STATE = "unexpected_state"
+SKIP_DISABLED_BUTTON = "disabled_button"
+SKIP_VALIDATION_ERROR = "validation_error"
+SKIP_NO_FORM_ELEMENTS = "no_form_elements"
+SKIP_MODAL_NOT_DETECTED = "modal_not_detected"
+SKIP_ALREADY_APPLIED = "already_applied"
+
+
 def format_elapsed_time(seconds):
     """Format elapsed time in human-readable format"""
     if seconds < 60:
@@ -60,6 +71,43 @@ def finalize_job(is_batch_mode, context, status):
     else:
         context.close()
         return None
+
+
+def handle_violation(violation_type, violation_msg, interactive_mode, elapsed_time):
+    """
+    Centralized decision point for all state-machine violations.
+    
+    In production mode (non-interactive):
+        - Returns ('SKIP', skip_reason) immediately
+        - No user input required
+        - Enables autonomous batch processing
+    
+    In interactive mode:
+        - Pauses for human inspection
+        - Allows manual correction
+        - Returns ('SKIP', skip_reason) after user confirms skip
+    
+    Args:
+        violation_type: SKIP_* constant (e.g., SKIP_UNRESOLVED_FIELD)
+        violation_msg: Human-readable description of the violation
+        interactive_mode: bool - if True, pause; if False, skip immediately
+        elapsed_time: float - seconds elapsed for time display
+    
+    Returns:
+        tuple: ('SKIP', skip_reason)
+    """
+    if interactive_mode:
+        # INTERACTIVE MODE: Pause for human decision
+        print(f"\n⏸️  PAUSED - {violation_msg}")
+        print(f"⏱️  Time so far: {format_elapsed_time(elapsed_time)}")
+        print("   Press Enter to SKIP this application")
+        input()
+    else:
+        # PRODUCTION MODE: Auto-skip without pause
+        print(f"\n⏭️  AUTO-SKIP - {violation_msg}")
+        print(f"⏱️  Time so far: {format_elapsed_time(elapsed_time)}")
+    
+    return ('SKIP', violation_type)
 
 
 def load_job_links(file_path):
@@ -188,6 +236,16 @@ Examples:
         '--links-file',
         help='File containing job URLs (one per line) for batch processing'
     )
+    parser.add_argument(
+        '--interactive',
+        action='store_true',
+        help='Enable interactive mode - pause on violations instead of auto-skipping (for rule authoring)'
+    )
+    parser.add_argument(
+        '--test-mode',
+        action='store_true',
+        help='Test mode - run automation without submitting (validates completeness)'
+    )
     
     args = parser.parse_args()
     
@@ -221,14 +279,42 @@ Examples:
     # Rebuild TIMING dict after config changes
     config.TIMING = config.get_active_timing()
     
+    # Mode flags
+    interactive_mode = args.interactive
+    test_mode = args.test_mode
+    
+    # Validate mode combinations
+    if interactive_mode and test_mode:
+        parser.error("Cannot use both --interactive and --test-mode")
+    
+    if interactive_mode:
+        print("🔧 Interactive mode enabled - will pause on violations\n")
+    elif test_mode:
+        print("🧪 Test mode enabled - will run without submitting\n")
+    
     # Batch mode tracking
     batch_results = []
+    csv_records = []  # For CSV summary output
     
     # Launch browser once for all jobs
     context, page = launch_browser()
     
     # Process each job URL
     for job_index, job_url in enumerate(job_urls, 1):
+        # Initialize job-level tracking for CSV
+        job_record = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'job_url': job_url,
+            'job_id': job_url.split('/')[-2] if '/jobs/view/' in job_url else 'unknown',
+            'result': None,
+            'skip_reason': '',
+            'state_at_exit': '',
+            'elapsed_seconds': 0,
+            'fields_resolved_count': 0,
+            'fields_unresolved_count': 0,
+            'confidence_floor_hit': False
+        }
+        
         # Print batch progress header
         if is_batch_mode:
             print("\n" + "="*60)
@@ -257,6 +343,11 @@ Examples:
         if already_applied:
             print(f"\n🔁 Job already applied — skipping ({reason})")
             print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+            job_record['result'] = 'SKIPPED_ALREADY_APPLIED'
+            job_record['skip_reason'] = SKIP_ALREADY_APPLIED
+            job_record['state_at_exit'] = 'ALREADY_APPLIED'
+            job_record['elapsed_seconds'] = time.time() - start_time
+            csv_records.append(job_record)
             log_result(job_url, "SKIPPED_ALREADY_APPLIED", reason, steps_completed)
             status = finalize_job(is_batch_mode, context, "SKIPPED_ALREADY_APPLIED")
             if status:
@@ -279,18 +370,37 @@ Examples:
             print("✅ Bot successfully activated Easy Apply!")
             page.wait_for_timeout(2000)
         else:
-            print("⚠️ Bot couldn't find Easy Apply via keyboard")
-            print("\nPlease manually:")
-            print("  1. Press Tab until Easy Apply is highlighted")
-            print("  2. Press Enter")
-            print()
-            input("Press Enter here when modal opens...")
+            if interactive_mode:
+                print("⚠️ Bot couldn't find Easy Apply via keyboard")
+                print("\nPlease manually:")
+                print("  1. Press Tab until Easy Apply is highlighted")
+                print("  2. Press Enter")
+                print()
+                input("Press Enter here when modal opens...")
+            else:
+                print("⚠️ Bot couldn't find Easy Apply via keyboard - auto-skipping")
+                job_record['result'] = 'SKIPPED'
+                job_record['skip_reason'] = SKIP_DISABLED_BUTTON
+                job_record['state_at_exit'] = 'EASY_APPLY_NOT_FOUND'
+                job_record['elapsed_seconds'] = time.time() - start_time
+                csv_records.append(job_record)
+                log_result(job_url, "SKIPPED", "Easy Apply button not accessible via keyboard", steps_completed)
+                status = finalize_job(is_batch_mode, context, "SKIPPED")
+                if status:
+                    batch_results.append(status)
+                    continue
+                return
         
         print()
         # Wait for modal to appear
         if not wait_for_easy_apply_modal(page):
             print("❌ Easy Apply modal not detected")
             print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+            job_record['result'] = 'FAILED'
+            job_record['skip_reason'] = SKIP_MODAL_NOT_DETECTED
+            job_record['state_at_exit'] = 'MODAL_NOT_DETECTED'
+            job_record['elapsed_seconds'] = time.time() - start_time
+            csv_records.append(job_record)
             log_result(job_url, "FAILED", "Modal not detected after manual click", steps_completed)
             status = finalize_job(is_batch_mode, context, "FAILED")
             if status:
@@ -331,6 +441,11 @@ Examples:
         if resume_upload == 0 and next_btn == 0 and submit_btn == 0 and review_btn == 0:
             print("\n❌ No form elements detected")
             print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+            job_record['result'] = 'FAILED'
+            job_record['skip_reason'] = SKIP_NO_FORM_ELEMENTS
+            job_record['state_at_exit'] = 'NO_FORM_ELEMENTS'
+            job_record['elapsed_seconds'] = time.time() - start_time
+            csv_records.append(job_record)
             log_result(job_url, "FAILED", "No form elements found in modal", steps_completed)
             status = finalize_job(is_batch_mode, context, "FAILED")
             if status:
@@ -341,12 +456,12 @@ Examples:
         print("\n✅ Form detected! Starting application process...")
     
         # Process multi-step form with state machine
-        max_steps = 10
+        # No max_steps limit - loop continues until terminal state (SUBMITTED, etc.)
         current_step = 0
         resume_path = "/Users/sawyersmith/Documents/resume2025.pdf"
         text_fields_processed = False  # Track if text fields were already processed this step
     
-        while current_step < max_steps:
+        while True:  # Loop until terminal state
             current_step += 1
         
             # Wait for page to stabilize
@@ -354,18 +469,60 @@ Examples:
         
             # STATE DETECTION FIRST - before any actions
             state = detect_state(page, current_step)
-            print(f"\n--- Step {current_step}/{max_steps} | State: {state} ---")
+            print(f"\n--- Step {current_step} | State: {state} ---")
         
             # Handle resume upload if present
             resume_inputs = page.locator('input[type="file"]')
             if resume_inputs.count() > 0:
-                print("  Uploading resume...")
+                # Check if this is a photo/image field (skip resume upload for those)
+                import os
+                resume_filename = os.path.basename(resume_path)
+                
                 try:
-                    resume_inputs.first.set_input_files(resume_path)
-                    print("  ✓ Resume uploaded")
-                    page.wait_for_timeout(500)
+                    file_input = resume_inputs.first
+                    file_label = ""
+                    file_aria_label = file_input.get_attribute('aria-label') or ""
+                    
+                    # Try to find associated label
+                    input_id = file_input.get_attribute('id')
+                    if input_id:
+                        label_el = page.locator(f'label[for="{input_id}"]')
+                        if label_el.count() > 0:
+                            file_label = label_el.first.inner_text().lower()
+                    
+                    combined_label = f"{file_label} {file_aria_label}".lower()
+                    
+                    # Skip if it's asking for a photo/image (not a resume/CV/document)
+                    photo_keywords = ['photo', 'picture', 'image', 'headshot', 'avatar']
+                    is_photo_field = any(keyword in combined_label for keyword in photo_keywords)
+                    
+                    if is_photo_field:
+                        print(f"  ⚠️ Detected photo/image upload field - skipping (resume not applicable)")
+                        print(f"     Field label: {combined_label}")
+                    else:
+                        # Check if there's already a file selected
+                        # Look for file name display elements near the file input
+                        file_display_selectors = [
+                            f'text="{resume_filename}"',
+                            f'[class*="file"][class*="name"]:has-text("{resume_filename}")',
+                            f'[class*="upload"]:has-text("{resume_filename}")',
+                        ]
+                        
+                        already_uploaded = False
+                        for selector in file_display_selectors:
+                            if page.locator(selector).count() > 0:
+                                print(f"  ✓ Resume already uploaded ({resume_filename}) - skipping")
+                                already_uploaded = True
+                                break
+                        
+                        if not already_uploaded:
+                            print("  Uploading resume...")
+                            resume_inputs.first.set_input_files(resume_path)
+                            print("  ✓ Resume uploaded")
+                            page.wait_for_timeout(500)
+                        
                 except Exception as e:
-                    print(f"  ⚠️ Resume upload failed: {e}")
+                    print(f"  ⚠️ Resume upload handling failed: {e}")
         
             # Handle radio buttons with semantic resolution
             radio_groups_data = detect_radio_groups(page)
@@ -498,19 +655,26 @@ Examples:
                     radio_needs_pause = True
         
             if radio_needs_pause:
-                elapsed = time.time() - start_time
-                print("\n⏸️  PAUSED - Unresolved radio button questions")
-                print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
-                print("   Press Enter to SKIP this application")
-                input()
+                action, skip_reason = handle_violation(
+                    SKIP_UNRESOLVED_FIELD,
+                    "Unresolved radio button questions",
+                    interactive_mode,
+                    time.time() - start_time
+                )
             
                 print("\n⚠️ Skipping application")
                 print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                job_record['result'] = 'SKIPPED'
+                job_record['skip_reason'] = skip_reason
+                job_record['state_at_exit'] = 'RADIO_UNRESOLVED'
+                job_record['elapsed_seconds'] = time.time() - start_time
+                job_record['confidence_floor_hit'] = True
+                csv_records.append(job_record)
                 log_result(job_url, "SKIPPED", "Radio questions with low confidence", steps_completed)
                 status = finalize_job(is_batch_mode, context, "SKIPPED")
                 if status:
                     batch_results.append(status)
-                    continue
+                    break
                 return
         
             # Handle checkboxes (simple consent boxes only)
@@ -782,19 +946,26 @@ Examples:
                     select_needs_pause = True
         
             if select_needs_pause:
-                elapsed = time.time() - start_time
-                print("\n⏸️  PAUSED - Unresolved select dropdown fields")
-                print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
-                print("   Press Enter to SKIP this application")
-                input()
+                action, skip_reason = handle_violation(
+                    SKIP_UNRESOLVED_FIELD,
+                    "Unresolved select dropdown fields",
+                    interactive_mode,
+                    time.time() - start_time
+                )
             
                 print("\n⚠️ Skipping application")
                 print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                job_record['result'] = 'SKIPPED'
+                job_record['skip_reason'] = skip_reason
+                job_record['state_at_exit'] = 'SELECT_UNRESOLVED'
+                job_record['elapsed_seconds'] = time.time() - start_time
+                job_record['confidence_floor_hit'] = True
+                csv_records.append(job_record)
                 log_result(job_url, "SKIPPED", "Select fields with low confidence", steps_completed)
                 status = finalize_job(is_batch_mode, context, "SKIPPED")
                 if status:
                     batch_results.append(status)
-                    continue
+                    break
                 return
         
             # STATE HANDLERS
@@ -919,28 +1090,40 @@ Examples:
                     f.write(json.dumps(log_entry) + "\n")
             
                 if any_unresolved:
-                    # PAUSE FOR HUMAN INSPECTION
-                    elapsed = time.time() - start_time
-                    print(f"\n⏸️  PAUSED - {field_count} field(s) detected, some unresolved")
-                    print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
-                    print("   Some fields could not be auto-filled")
-                    print("   Options:")
-                    print("     1. Press Enter to SKIP this application (recommended)")
-                    print("     2. Manually correct the fields and continue")
-                    print()
-                
-                    choice = input("Press Enter to skip application: ").strip()
+                    # Count resolved vs unresolved for CSV tracking
+                    resolved_count = sum(1 for f in text_fields if not f.get('needs_pause', False))
+                    unresolved_count = sum(1 for f in text_fields if f.get('needs_pause', False))
+                    
+                    job_record['fields_resolved_count'] = resolved_count
+                    job_record['fields_unresolved_count'] = unresolved_count
+                    
+                    # CENTRALIZED VIOLATION HANDLER
+                    action, skip_reason = handle_violation(
+                        SKIP_UNRESOLVED_FIELD,
+                        f"{field_count} field(s) detected, some unresolved",
+                        interactive_mode,
+                        time.time() - start_time
+                    )
                 
                     print("\n⚠️ Skipping application - unresolved fields present")
                     print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                    job_record['result'] = 'SKIPPED'
+                    job_record['skip_reason'] = skip_reason
+                    job_record['state_at_exit'] = 'TEXT_FIELD_UNRESOLVED'
+                    job_record['elapsed_seconds'] = time.time() - start_time
+                    csv_records.append(job_record)
                     log_result(job_url, "SKIPPED", "Text fields with unresolved answers", steps_completed)
                     status = finalize_job(is_batch_mode, context, "SKIPPED")
                     if status:
                         batch_results.append(status)
-                        continue
+                        break
                     return
                 else:
                     # ALL FIELDS RESOLVED - continue to next step
+                    resolved_count = len(text_fields)
+                    job_record['fields_resolved_count'] = resolved_count
+                    job_record['fields_unresolved_count'] = 0
+                    
                     print(f"\n✅ All {field_count} field(s) resolved automatically")
                     print("   Continuing to next step...")
                     text_fields_processed = True  # Mark as processed
@@ -949,6 +1132,21 @@ Examples:
             elif state == "MODAL_SINGLE_STEP":
                 print("\n🎯 Single-step application detected!")
                 print("✅ This is our target - ready to submit via keyboard!")
+            
+                # TEST MODE: Skip submission, mark as test success
+                if test_mode:
+                    print("\n🧪 TEST MODE - Application complete without submission")
+                    print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                    job_record['result'] = 'TEST_SUCCESS'
+                    job_record['state_at_exit'] = 'SUBMIT_READY'
+                    job_record['elapsed_seconds'] = time.time() - start_time
+                    csv_records.append(job_record)
+                    log_result(job_url, "TEST_SUCCESS", "Application ready for submission (not submitted)", steps_completed)
+                    status = finalize_job(is_batch_mode, context, "TEST_SUCCESS")
+                    if status:
+                        batch_results.append(status)
+                        break
+                    return
             
                 # MANUAL CONFIRMATION REQUIRED
                 elapsed = time.time() - start_time
@@ -963,13 +1161,17 @@ Examples:
                 if confirmation not in ["Y", "YES"]:
                     print("\n❌ Submission cancelled by user")
                     print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                    job_record['result'] = 'CANCELLED'
+                    job_record['state_at_exit'] = 'USER_CANCELLED'
+                    job_record['elapsed_seconds'] = time.time() - start_time
+                    csv_records.append(job_record)
                     log_result(job_url, "CANCELLED", "User declined final submission", steps_completed)
                     print("\nKeeping browser open for inspection...")
                     input("Press Enter to close browser...")
                     status = finalize_job(is_batch_mode, context, "CANCELLED")
                     if status:
                         batch_results.append(status)
-                        continue
+                        break
                     return
             
                 print("\n✅ User confirmed - proceeding with submission...")
@@ -994,10 +1196,18 @@ Examples:
                     if success:
                         print("\n✅ APPLICATION SUBMITTED SUCCESSFULLY!")
                         print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                        job_record['result'] = 'SUCCESS'
+                        job_record['state_at_exit'] = 'SUBMITTED'
+                        job_record['elapsed_seconds'] = time.time() - start_time
+                        csv_records.append(job_record)
                         log_result(job_url, "SUCCESS", "Application submitted (keyboard)", steps_completed + 1)
                     else:
                         print("\n⚠️ Submit pressed but success not confirmed")
                         print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                        job_record['result'] = 'SUCCESS'
+                        job_record['state_at_exit'] = 'SUBMIT_UNCONFIRMED'
+                        job_record['elapsed_seconds'] = time.time() - start_time
+                        csv_records.append(job_record)
                         log_result(job_url, "SUCCESS", "Submit pressed (unconfirmed)", steps_completed + 1)
                 
                     print("\nKeeping browser open for inspection...")
@@ -1005,32 +1215,94 @@ Examples:
                     status = finalize_job(is_batch_mode, context, "SUCCESS")
                     if status:
                         batch_results.append(status)
-                        continue
+                        break
                     return
                 else:
-                    elapsed = time.time() - start_time
-                    print("\n⏸️  PAUSED - Submit button not accessible")
-                    print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
-                    print("   The Submit button may be disabled or not found")
-                    print("   Press Enter to skip or manually investigate")
-                    print()
-                
-                    input("Press Enter to skip application: ")
+                    action, skip_reason = handle_violation(
+                        SKIP_DISABLED_BUTTON,
+                        "Submit button not accessible",
+                        interactive_mode,
+                        time.time() - start_time
+                    )
                 
                     print("\n⚠️ Skipping application - Submit button not accessible")
                     print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                    job_record['result'] = 'SKIPPED'
+                    job_record['skip_reason'] = skip_reason
+                    job_record['state_at_exit'] = 'SUBMIT_BUTTON_DISABLED'
+                    job_record['elapsed_seconds'] = time.time() - start_time
+                    csv_records.append(job_record)
                     log_result(job_url, "SKIPPED", "Submit button not accessible", steps_completed)
-                    print("\nKeeping browser open for inspection...")
-                    input("Press Enter to close browser...")
+                    
+                    if interactive_mode:
+                        print("\nKeeping browser open for inspection...")
+                        input("Press Enter to close browser...")
+                    
                     status = finalize_job(is_batch_mode, context, "SKIPPED")
                     if status:
                         batch_results.append(status)
-                        continue
+                        break
                     return
         
             elif state == "MODAL_FORM_STEP":
                 print("\n📝 Multi-step form detected - intermediate step with Next button")
-                print("   Proceeding to next step...")
+                
+                # BEFORE clicking Next, check for validation errors on the page
+                validation_errors_detected = False
+                error_messages = []
+                
+                # Check for visible error messages
+                error_selectors = [
+                    '[role="dialog"] .artdeco-inline-feedback--error',
+                    '[role="dialog"] [role="alert"]',
+                    '[role="dialog"] .error-message',
+                    '[role="dialog"] .fb-form-element-label__error',
+                ]
+                
+                for err_sel in error_selectors:
+                    if page.locator(err_sel).count() > 0:
+                        errors = page.locator(err_sel).all()
+                        for error_el in errors:
+                            if error_el.is_visible():
+                                error_text = error_el.inner_text().strip()
+                                if error_text:
+                                    error_messages.append(error_text)
+                                    validation_errors_detected = True
+                
+                # Check for fields with aria-invalid=true
+                invalid_fields = page.locator('[role="dialog"] input[aria-invalid="true"], [role="dialog"] select[aria-invalid="true"]').all()
+                if invalid_fields:
+                    print(f"  ⚠️ Found {len(invalid_fields)} field(s) with validation errors")
+                    validation_errors_detected = True
+                
+                if validation_errors_detected:
+                    print(f"  ❌ Validation errors present on form:")
+                    for msg in error_messages[:3]:  # Show first 3 errors
+                        print(f"     - {msg}")
+                    
+                    action, skip_reason = handle_violation(
+                        SKIP_VALIDATION_ERROR,
+                        f"Form has validation errors: {', '.join(error_messages[:2])}",
+                        interactive_mode,
+                        time.time() - start_time
+                    )
+                    
+                    print("\n⚠️ Skipping application - form validation errors present")
+                    print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                    job_record['result'] = 'SKIPPED'
+                    job_record['skip_reason'] = skip_reason
+                    job_record['state_at_exit'] = 'FORM_VALIDATION_ERROR'
+                    job_record['elapsed_seconds'] = time.time() - start_time
+                    csv_records.append(job_record)
+                    log_result(job_url, "SKIPPED", f"Form validation errors: {error_messages[0] if error_messages else 'fields invalid'}", steps_completed)
+                    
+                    status = finalize_job(is_batch_mode, context, "SKIPPED")
+                    if status:
+                        batch_results.append(status)
+                        break
+                    return
+                
+                print("   No validation errors detected - proceeding to next step...")
             
                 # Activate Next button using modal-scoped method
                 if activate_button_in_modal(page, "Next"):
@@ -1040,30 +1312,30 @@ Examples:
                     continue
                 else:
                     # Next button not clickable (likely disabled due to validation)
-                    elapsed = time.time() - start_time
-                    print("\n⏸️  PAUSED - Next button not accessible")
-                    print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
-                    print("   The Next button may be disabled due to:")
-                    print("     - Required field not filled")
-                    print("     - Required checkbox not checked")
-                    print("     - Validation error")
-                    print()
-                    print("   Options:")
-                    print("     1. Press Enter to SKIP this application")
-                    print("     2. Manually fix the issue and continue")
-                    print()
-                
-                    input("Press Enter to skip application: ")
+                    action, skip_reason = handle_violation(
+                        SKIP_DISABLED_BUTTON,
+                        "Next button not accessible (may be disabled due to validation)",
+                        interactive_mode,
+                        time.time() - start_time
+                    )
                 
                     print("\n⚠️ Skipping application - Next button not accessible")
                     print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                    job_record['result'] = 'SKIPPED'
+                    job_record['skip_reason'] = skip_reason
+                    job_record['state_at_exit'] = 'NEXT_BUTTON_DISABLED'
+                    job_record['elapsed_seconds'] = time.time() - start_time
+                    csv_records.append(job_record)
                     log_result(job_url, "SKIPPED", "Next button not accessible", steps_completed)
-                    print("\nKeeping browser open for inspection...")
-                    input("Press Enter to close browser...")
+                    
+                    if interactive_mode:
+                        print("\nKeeping browser open for inspection...")
+                        input("Press Enter to close browser...")
+                    
                     status = finalize_job(is_batch_mode, context, "SKIPPED")
                     if status:
                         batch_results.append(status)
-                        continue
+                        break
                     return
         
             elif state == "MODAL_REVIEW_STEP":
@@ -1075,6 +1347,21 @@ Examples:
                     page.wait_for_timeout(2000)
                     continue
                 elif page.locator('[role="dialog"] button:has-text("Submit")').count() > 0:
+                    # TEST MODE: Skip submission, mark as test success
+                    if test_mode:
+                        print("\n🧪 TEST MODE - Application complete without submission")
+                        print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                        job_record['result'] = 'TEST_SUCCESS'
+                        job_record['state_at_exit'] = 'SUBMIT_READY'
+                        job_record['elapsed_seconds'] = time.time() - start_time
+                        csv_records.append(job_record)
+                        log_result(job_url, "TEST_SUCCESS", "Application ready for submission (not submitted)", steps_completed)
+                        status = finalize_job(is_batch_mode, context, "TEST_SUCCESS")
+                        if status:
+                            batch_results.append(status)
+                            break
+                        return
+                
                     # MANUAL CONFIRMATION REQUIRED before final submit
                     elapsed = time.time() - start_time
                     print("\n⚠️  FINAL SUBMISSION CONFIRMATION")
@@ -1088,13 +1375,17 @@ Examples:
                     if confirmation not in ["Y", "YES"]:
                         print("\n❌ Submission cancelled by user")
                         print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                        job_record['result'] = 'CANCELLED'
+                        job_record['state_at_exit'] = 'USER_CANCELLED'
+                        job_record['elapsed_seconds'] = time.time() - start_time
+                        csv_records.append(job_record)
                         log_result(job_url, "CANCELLED", "User declined final submission", steps_completed)
                         print("\nKeeping browser open for inspection...")
                         input("Press Enter to close browser...")
                         status = finalize_job(is_batch_mode, context, "CANCELLED")
                         if status:
                             batch_results.append(status)
-                            continue
+                            break
                         return
                 
                     print("\n✅ User confirmed - proceeding with submission...")
@@ -1118,10 +1409,18 @@ Examples:
                     if success:
                         print("\n✅ APPLICATION SUBMITTED SUCCESSFULLY!")
                         print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                        job_record['result'] = 'SUCCESS'
+                        job_record['state_at_exit'] = 'SUBMITTED'
+                        job_record['elapsed_seconds'] = time.time() - start_time
+                        csv_records.append(job_record)
                         log_result(job_url, "SUCCESS", "Application submitted (multi-step)", steps_completed + 1)
                     else:
                         print("\n⚠️ Submit pressed but success not confirmed")
                         print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                        job_record['result'] = 'SUCCESS'
+                        job_record['state_at_exit'] = 'SUBMIT_UNCONFIRMED'
+                        job_record['elapsed_seconds'] = time.time() - start_time
+                        csv_records.append(job_record)
                         log_result(job_url, "SUCCESS", "Submit pressed (unconfirmed)", steps_completed + 1)
                 
                     print("\nKeeping browser open for inspection...")
@@ -1129,49 +1428,67 @@ Examples:
                     status = finalize_job(is_batch_mode, context, "SUCCESS")
                     if status:
                         batch_results.append(status)
-                        continue
+                        break
                     return
                 else:
-                    elapsed = time.time() - start_time
-                    print("\n⏸️  PAUSED - Review/Submit button not accessible")
-                    print(f"⏱️  Time so far: {format_elapsed_time(elapsed)}")
-                    print("   Could not find or activate Review or Submit button")
-                    print("   Press Enter to skip or manually investigate")
-                    print()
-                
-                    input("Press Enter to skip application: ")
+                    action, skip_reason = handle_violation(
+                        SKIP_DISABLED_BUTTON,
+                        "Review/Submit button not accessible",
+                        interactive_mode,
+                        time.time() - start_time
+                    )
                 
                     print("\n⚠️ Skipping application - Review/Submit button not accessible")
                     print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                    job_record['result'] = 'SKIPPED'
+                    job_record['skip_reason'] = skip_reason
+                    job_record['state_at_exit'] = 'REVIEW_SUBMIT_BUTTON_DISABLED'
+                    job_record['elapsed_seconds'] = time.time() - start_time
+                    csv_records.append(job_record)
                     log_result(job_url, "SKIPPED", "Review/Submit button not accessible", steps_completed)
-                    print("\nKeeping browser open for inspection...")
-                    input("Press Enter to close browser...")
+                    
+                    if interactive_mode:
+                        print("\nKeeping browser open for inspection...")
+                        input("Press Enter to close browser...")
+                    
                     status = finalize_job(is_batch_mode, context, "SKIPPED")
                     if status:
                         batch_results.append(status)
-                        continue
+                        break
                     return
         
             elif state == "SUBMITTED":
                 print("\n✅ Application already submitted!")
                 print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                job_record['result'] = 'SUCCESS'
+                job_record['state_at_exit'] = 'SUBMITTED'
+                job_record['elapsed_seconds'] = time.time() - start_time
+                csv_records.append(job_record)
                 log_result(job_url, "SUCCESS", "Application confirmed submitted", steps_completed)
                 status = finalize_job(is_batch_mode, context, "SUCCESS")
                 if status:
                     batch_results.append(status)
-                    continue
+                    break
                 return
         
             elif state == "ERROR":
                 print("\n❌ Unexpected state - cannot determine next action")
                 print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                job_record['result'] = 'FAILED'
+                job_record['skip_reason'] = SKIP_UNEXPECTED_STATE
+                job_record['state_at_exit'] = 'ERROR'
+                job_record['elapsed_seconds'] = time.time() - start_time
+                csv_records.append(job_record)
                 log_result(job_url, "FAILED", "Unknown state detected", steps_completed)
-                print("\nKeeping browser open for inspection...")
-                input("Press Enter to close browser...")
+                
+                if interactive_mode:
+                    print("\nKeeping browser open for inspection...")
+                    input("Press Enter to close browser...")
+                
                 status = finalize_job(is_batch_mode, context, "FAILED")
                 if status:
                     batch_results.append(status)
-                    continue
+                    break
                 return
         
             elif state == "MODAL_OPEN":
@@ -1182,19 +1499,17 @@ Examples:
             else:
                 print(f"\n⚠️ Unhandled state: {state}")
                 print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
+                job_record['result'] = 'FAILED'
+                job_record['skip_reason'] = SKIP_UNEXPECTED_STATE
+                job_record['state_at_exit'] = state
+                job_record['elapsed_seconds'] = time.time() - start_time
+                csv_records.append(job_record)
                 log_result(job_url, "FAILED", f"Unhandled state: {state}", steps_completed)
                 status = finalize_job(is_batch_mode, context, "FAILED")
                 if status:
                     batch_results.append(status)
-                    continue
+                    break
                 return
-    
-        print("\n⚠️ Max steps reached without completion")
-        print(f"⏱️  Total time: {format_elapsed_time(time.time() - start_time)}")
-        log_result(job_url, "FAILED", "Max steps reached", steps_completed)
-        status = finalize_job(is_batch_mode, context, "FAILED")
-        if status:
-            batch_results.append(status)
     
     # Batch mode summary
     if is_batch_mode:
@@ -1207,12 +1522,62 @@ Examples:
         counts = Counter(batch_results)
         
         print(f"\nProcessed {len(job_urls)} jobs:")
-        for status in ["SUCCESS", "SKIPPED", "SKIPPED_ALREADY_APPLIED", "CANCELLED", "FAILED"]:
+        for status in ["SUCCESS", "TEST_SUCCESS", "SKIPPED", "SKIPPED_ALREADY_APPLIED", "CANCELLED", "FAILED"]:
             if counts[status] > 0:
                 print(f"  {status}: {counts[status]}")
         
+        # Write CSV summary
+        if csv_records:
+            import csv
+            csv_filename = f"job_results_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+            
+            fieldnames = [
+                'timestamp',
+                'job_url',
+                'job_id',
+                'result',
+                'skip_reason',
+                'state_at_exit',
+                'elapsed_seconds',
+                'fields_resolved_count',
+                'fields_unresolved_count',
+                'confidence_floor_hit'
+            ]
+            
+            with open(csv_filename, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(csv_records)
+            
+            print(f"\n📊 CSV summary written to: {csv_filename}")
+        
         print("\nClosing browser...")
         context.close()
+    else:
+        # Single job mode - also write CSV if record exists
+        if csv_records:
+            import csv
+            csv_filename = f"job_results_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+            
+            fieldnames = [
+                'timestamp',
+                'job_url',
+                'job_id',
+                'result',
+                'skip_reason',
+                'state_at_exit',
+                'elapsed_seconds',
+                'fields_resolved_count',
+                'fields_unresolved_count',
+                'confidence_floor_hit'
+            ]
+            
+            with open(csv_filename, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(csv_records)
+            
+            print(f"\n📊 CSV summary written to: {csv_filename}")
 
 
 if __name__ == "__main__":

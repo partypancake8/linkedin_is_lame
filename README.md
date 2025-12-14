@@ -10,6 +10,58 @@ Modular LinkedIn Easy Apply automation using keyboard-only navigation, semantic 
 - **Answers yes/no questions** using keyword matching (work authorization, sponsorship, etc.)
 - **Uploads resume** when file input detected
 - **Requires manual confirmation** before final submission (prevents accidental applications)
+- **Production mode**: Auto-skips jobs with unresolved fields (no pausing)
+- **Interactive mode**: Pauses for manual inspection when issues arise (for rule authoring)
+
+## Operating Modes
+
+### Production Mode (Default)
+
+Autonomous operation for batch processing:
+
+- **Auto-skips** jobs with unresolved fields, low confidence, or validation errors
+- **No pausing** for human intervention
+- **CSV summary** output with skip reasons and performance metrics
+- Ideal for high-volume application processing
+
+```bash
+./run.sh --links-file jobs.txt
+```
+
+### Test Mode (--test-mode)
+
+Validation mode for testing automation completeness without submitting:
+
+- **Runs non-interactively** through entire application flow
+- **Auto-skips** jobs with violations (same as production mode)
+- **Stops before submission** - validates form completion without applying
+- **Marks as TEST_SUCCESS** if application reaches submit-ready state
+- Use for testing new field rules or validating automation coverage
+
+```bash
+./run.sh --test-mode --links-file jobs.txt
+```
+
+**Output:**
+
+- Jobs that complete all fields: `TEST_SUCCESS`
+- Jobs with unresolved fields: `SKIPPED` (with skip reason)
+- CSV includes both TEST_SUCCESS and SKIPPED results
+
+### Interactive Mode (--interactive)
+
+Manual inspection mode for rule authoring and debugging:
+
+- **Pauses** when encountering unresolved fields or issues
+- Allows manual correction before continuing
+- Keeps browser open for inspection
+- Use when developing new field resolution rules
+
+```bash
+./run.sh --interactive "https://www.linkedin.com/jobs/view/123456789/"
+```
+
+**Note:** Cannot use `--interactive` and `--test-mode` together.
 
 ## Dev Test Speed Mode
 
@@ -81,7 +133,9 @@ Command-line flags override config file settings.
 
 ## Usage
 
-Run the bot with a job URL:
+### Single Job Mode
+
+Run the bot with a single job URL:
 
 ```bash
 # Production speed (default, safest)
@@ -103,6 +157,96 @@ python -m linkedin_easy_apply.main --speed dev "https://www.linkedin.com/jobs/vi
 python -m linkedin_easy_apply.main --speed super "https://www.linkedin.com/jobs/view/123456789/"
 ```
 
+### Batch Mode (Multiple Jobs)
+
+Process multiple job applications in one session using a links file:
+
+1. **Create a text file** (e.g., `jobs.txt`) with one job URL per line:
+
+   ```
+   # My job applications - lines starting with # are comments
+   https://www.linkedin.com/jobs/view/4012345678/
+   https://www.linkedin.com/jobs/view/4087654321/
+   https://www.linkedin.com/jobs/view/4056789012/
+
+   # Duplicate URLs are automatically removed
+   ```
+
+2. **Run in batch mode:**
+
+   ```bash
+   # Production speed
+   ./run.sh --links-file jobs.txt
+
+   # With speed modes
+   ./run.sh --speed dev --links-file jobs.txt
+   ./run.sh --speed super --links-file jobs.txt
+   ```
+
+   Or using Python:
+
+   ```bash
+   python -m linkedin_easy_apply.main --links-file jobs.txt
+   python -m linkedin_easy_apply.main --speed dev --links-file jobs.txt
+   ```
+
+3. **Batch mode features:**
+   - Browser stays open across all jobs
+   - Automatically continues to next job after completion
+   - Skips jobs already applied to
+   - Shows progress: "JOB 2/10"
+   - Summary report at the end:
+     ```
+     BATCH COMPLETE
+     Processed 10 jobs:
+       SUCCESS: 6
+       SKIPPED: 2
+       SKIPPED_ALREADY_APPLIED: 1
+       FAILED: 1
+     ```
+   - **CSV summary output** with detailed metrics per job:
+     ```
+     📊 CSV summary written to: job_results_20251214_143022.csv
+     ```
+
+**Sample jobs.txt file** is included in the repository (`test_jobs.txt`).
+
+### CSV Output Format
+
+Each job processed generates one row with the following columns:
+
+| Column                    | Description                                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------- |
+| `timestamp`               | ISO 8601 timestamp of job processing                                                   |
+| `job_url`                 | Full LinkedIn job URL                                                                  |
+| `job_id`                  | Extracted job ID from URL                                                              |
+| `result`                  | SUCCESS / SKIPPED / SKIPPED_ALREADY_APPLIED / CANCELLED / FAILED                       |
+| `skip_reason`             | Structured reason code (e.g., `unresolved_field`, `low_confidence`, `disabled_button`) |
+| `state_at_exit`           | State machine state when job ended                                                     |
+| `elapsed_seconds`         | Total processing time for this job                                                     |
+| `fields_resolved_count`   | Number of text fields successfully auto-filled                                         |
+| `fields_unresolved_count` | Number of text fields that could not be resolved                                       |
+| `confidence_floor_hit`    | Boolean indicating if any field fell below confidence threshold                        |
+
+Example CSV output:
+
+```csv
+timestamp,job_url,job_id,result,skip_reason,state_at_exit,elapsed_seconds,fields_resolved_count,fields_unresolved_count,confidence_floor_hit
+2025-12-14T14:30:22Z,https://linkedin.com/jobs/view/123,123,SUCCESS,,SUBMITTED,45.3,3,0,False
+2025-12-14T14:31:15Z,https://linkedin.com/jobs/view/456,456,TEST_SUCCESS,,SUBMIT_READY,38.1,4,0,False
+2025-12-14T14:32:05Z,https://linkedin.com/jobs/view/789,789,SKIPPED,unresolved_field,TEXT_FIELD_UNRESOLVED,12.1,2,1,False
+2025-12-14T14:32:30Z,https://linkedin.com/jobs/view/321,321,SKIPPED_ALREADY_APPLIED,already_applied,ALREADY_APPLIED,5.2,0,0,False
+```
+
+**Result Types:**
+
+- `SUCCESS` - Application submitted successfully (production mode)
+- `TEST_SUCCESS` - Application ready but not submitted (test mode)
+- `SKIPPED` - Unresolved fields or violations
+- `SKIPPED_ALREADY_APPLIED` - Job already applied to
+- `CANCELLED` - User declined submission (interactive mode)
+- `FAILED` - Technical error or unexpected state
+
 ### What Happens
 
 1. **Browser launches** with persistent LinkedIn session (stay logged in)
@@ -115,10 +259,24 @@ python -m linkedin_easy_apply.main --speed super "https://www.linkedin.com/jobs/
    - Answers yes/no questions using keyword matching
    - Selects dropdown options when confident
    - Navigates multi-step forms automatically
-5. **Manual confirmation:** You must type `YES` to submit
-6. **Logs result** to `log.jsonl`
+5. **Manual confirmation:** You must type `YES` to submit (in interactive mode)
+6. **Logs result** to `log.jsonl` and CSV summary
 
-### When It Pauses
+### When It Skips (Production Mode)
+
+The bot will **auto-skip** jobs when encountering:
+
+- **Unresolved fields**: Text fields, radio buttons, or dropdowns without confident matches
+- **Low confidence**: Field resolution below safety threshold
+- **Validation errors**: LinkedIn rejects input (invalid format, missing required fields)
+- **Disabled buttons**: Next/Review/Submit buttons not clickable
+- **Already applied**: Job shows "Applied" status or confirmation
+
+Skip reasons are logged to CSV with structured codes for analysis.
+
+### When It Pauses (Interactive Mode Only)
+
+With `--interactive` flag, the bot pauses instead of skipping:
 
 The bot pauses and requires manual intervention when:
 

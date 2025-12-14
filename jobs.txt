@@ -1,0 +1,13 @@
+# Sample job links for batch mode testing
+# Lines starting with # are comments and will be ignored
+
+https://www.linkedin.com/jobs/view/4305799166/
+https://www.linkedin.com/jobs/view/4271097315/
+https://www.linkedin.com/jobs/view/4342320776/
+https://www.linkedin.com/jobs/view/4323593796/
+https://www.linkedin.com/jobs/view/4309029930/
+https://www.linkedin.com/jobs/view/4321340065/
+https://www.linkedin.com/jobs/view/4310489805/
+https://www.linkedin.com/jobs/view/4323366354/
+https://www.linkedin.com/jobs/view/4333360367/
+https://www.linkedin.com/jobs/view/4326531134/

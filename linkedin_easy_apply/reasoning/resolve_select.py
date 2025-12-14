@@ -106,11 +106,25 @@ def resolve_select_answer(select_metadata):
     if matched_key not in eligible_types:
         return (None, 'low', 'unsupported_dropdown_type')
     
-    # Self-ID fields can have up to 15 options (to accommodate various formats)
-    if option_count > 15:
-        return (None, 'low', 'too_many_options')
+    # Option count limits vary by field type
+    # Self-ID fields: up to 15 options
+    # Referral source: up to 25 options (many job boards/sources)
+    # Education level: up to 15 options (various degree types)
+    # Language proficiency: up to 8 options
+    if matched_key in ['gender', 'race', 'veteran_status', 'disability_status']:
+        if option_count > 15:
+            return (None, 'low', 'too_many_options')
+    elif matched_key == 'referral_source':
+        if option_count > 25:
+            return (None, 'low', 'too_many_referral_options')
+    elif matched_key == 'education_level':
+        if option_count > 15:
+            return (None, 'low', 'too_many_education_options')
+    elif matched_key == 'language_proficiency':
+        if option_count > 8:
+            return (None, 'low', 'too_many_options_for_proficiency')
     
-    # At this point, we have a valid self-ID field type
+    # At this point, we have a valid field type
     if matched_key and matched_key in ANSWER_BANK:
         expected_value = ANSWER_BANK[matched_key]
         

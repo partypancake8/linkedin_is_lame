@@ -47,6 +47,25 @@ def classify_field_type(field_metadata):
         if has_date_format and not has_birth_pattern:
             return 'TIER1_CURRENT_DATE'
     
+    # applicant_city_location - Current city/location field
+    if input_type in ['text', ''] and field_metadata.get('tag') != 'textarea':
+        # Check for city/location patterns (check for various formats)
+        city_patterns = [
+            'city', 'current city', 'location (city)', 'location(city)',
+            'current location', 'where are you located', 'your city',
+            'city of residence', 'residing city'
+        ]
+        # Anti-patterns (reject these)
+        address_patterns = ['street', 'address', 'postal', 'zip', 'address line']
+        relocation_patterns = ['willing to relocate', 'open to relocation', 'relocate', 'move']
+        
+        has_city_pattern = any(pattern in combined_text for pattern in city_patterns)
+        has_address_pattern = any(pattern in combined_text for pattern in address_patterns)
+        has_relocation_pattern = any(pattern in combined_text for pattern in relocation_patterns)
+        
+        if has_city_pattern and not has_address_pattern and not has_relocation_pattern:
+            return 'TIER1_CITY_LOCATION'
+    
     # TIER-2 CLASSIFICATION (checked second)
     
     # applicant_email - Must be email type OR contain "email" keyword

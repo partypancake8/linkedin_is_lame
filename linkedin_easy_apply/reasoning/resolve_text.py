@@ -11,6 +11,7 @@ def resolve_field_answer(field_metadata, field_classification):
     Supports classifications:
     - TIER1_APPLICANT_FULL_NAME: Return user's full name
     - TIER1_CURRENT_DATE: Return today's date in MM/DD/YYYY format
+    - TIER1_CITY_LOCATION: Return user's current city
     - TIER2_APPLICANT_EMAIL: Return user's email
     - TIER2_APPLICANT_PHONE: Return user's phone number
     - NUMERIC_FIELD: Match numeric answer from bank
@@ -42,6 +43,13 @@ def resolve_field_answer(field_metadata, field_classification):
         # Deterministic: always return today's date in MM/DD/YYYY format
         # No inference, no date math - just current date
         return datetime.now().strftime('%m/%d/%Y')
+    
+    if field_classification == 'TIER1_CITY_LOCATION':
+        # Deterministic: always return configured city location
+        if 'applicant_city_location' in ANSWER_BANK:
+            return ANSWER_BANK['applicant_city_location']
+        # If not configured, fail safely (pause)
+        return None
     
     # TIER-2 FIELD RESOLUTION (contact information, usually safe)
     

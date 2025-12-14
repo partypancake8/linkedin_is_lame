@@ -20,6 +20,7 @@ ANSWER_BANK = {
     # Tier-1 text fields (always safe - explicit, unambiguous)
     'applicant_full_name': 'Sawyer Smith',
     'current_date_mm_dd_yyyy': None,  # Dynamically generated
+    'applicant_city_location': 'Birmingham',
     
     # Tier-2 text fields (usually safe - contact information)
     'applicant_email': 'sawyer.i.smith@gmail.com',

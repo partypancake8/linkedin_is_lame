@@ -1,0 +1,11 @@
+timestamp,job_url,job_id,result,skip_reason,state_at_exit,elapsed_seconds,fields_resolved_count,fields_unresolved_count,confidence_floor_hit
+2025-12-14T21:18:07.937498+00:00,https://www.linkedin.com/jobs/view/4305799166/,4305799166,SKIPPED,unresolved_field,SELECT_UNRESOLVED,45.223714113235474,0,0,True
+2025-12-14T21:18:53.161691+00:00,https://www.linkedin.com/jobs/view/4271097315/,4271097315,SKIPPED,unresolved_field,RADIO_UNRESOLVED,22.854197025299072,0,0,True
+2025-12-14T21:19:16.015982+00:00,https://www.linkedin.com/jobs/view/4342320776/,4342320776,SKIPPED,validation_error,FORM_VALIDATION_ERROR,14.248406171798706,0,0,False
+2025-12-14T21:19:30.264572+00:00,https://www.linkedin.com/jobs/view/4323593796/,4323593796,TEST_SUCCESS,,SUBMIT_READY,22.75691294670105,0,0,False
+2025-12-14T21:19:53.021684+00:00,https://www.linkedin.com/jobs/view/4309029930/,4309029930,SKIPPED,unresolved_field,RADIO_UNRESOLVED,22.945581197738647,0,0,True
+2025-12-14T21:20:15.967562+00:00,https://www.linkedin.com/jobs/view/4321340065/,4321340065,SKIPPED,validation_error,FORM_VALIDATION_ERROR,23.1750750541687,0,0,False
+2025-12-14T21:20:39.142834+00:00,https://www.linkedin.com/jobs/view/4310489805/,4310489805,TEST_SUCCESS,,SUBMIT_READY,53.49028301239014,0,0,False
+2025-12-14T21:21:32.633308+00:00,https://www.linkedin.com/jobs/view/4323366354/,4323366354,SKIPPED,unresolved_field,SELECT_UNRESOLVED,23.43244218826294,0,0,True
+2025-12-14T21:21:56.066020+00:00,https://www.linkedin.com/jobs/view/4333360367/,4333360367,SKIPPED,unresolved_field,SELECT_UNRESOLVED,29.476885080337524,0,0,True
+2025-12-14T21:22:25.542972+00:00,https://www.linkedin.com/jobs/view/4326531134/,4326531134,SKIPPED,unresolved_field,RADIO_UNRESOLVED,25.65459108352661,0,0,True
