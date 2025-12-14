@@ -16,6 +16,7 @@ from linkedin_easy_apply.browser.session import launch_browser
 from linkedin_easy_apply.state.detector import detect_state
 from linkedin_easy_apply.perception.text_fields import detect_text_fields_in_modal, detect_inline_validation_error
 from linkedin_easy_apply.perception.radios import detect_radio_groups
+from linkedin_easy_apply.perception.checkboxes import detect_checkbox_groups
 from linkedin_easy_apply.perception.selects import detect_select_fields
 from linkedin_easy_apply.reasoning.classify import classify_field_type
 from linkedin_easy_apply.reasoning.resolve_text import resolve_field_answer
@@ -677,62 +678,157 @@ Examples:
                     break
                 return
         
-            # Handle checkboxes (simple consent boxes only)
-            checkboxes = page.locator('[role="dialog"] input[type="checkbox"]')
-            checkbox_count = checkboxes.count()
-        
-            if checkbox_count > 0:
-                print(f"  Found {checkbox_count} checkbox(es)")
-                for i in range(checkbox_count):
-                    checkbox = checkboxes.nth(i)
+            # Handle checkboxes - detect and classify groups
+            checkbox_data = detect_checkbox_groups(page)
+            radio_equivalent_groups = checkbox_data['radio_equivalent']
+            standard_checkboxes = checkbox_data['standard_checkboxes']
+            
+            # Handle radio-equivalent checkbox groups (mutually exclusive choices)
+            if radio_equivalent_groups:
+                print(f"  Found {len(radio_equivalent_groups)} radio-equivalent checkbox group(s)")
+                
+                for group in radio_equivalent_groups:
+                    question = group['question']
+                    option_count = group['option_count']
+                    option_labels = group['option_labels']
+                    checkboxes_in_group = group['checkboxes']
+                    
+                    print(f"\n  Radio-Equivalent Checkbox Group:")
+                    print(f"    Question: {question}")
+                    print(f"    Options ({option_count}): {', '.join(option_labels)}")
+                    
+                    # Use radio resolution logic
+                    answer, confidence, matched_key = resolve_radio_question(
+                        page, 
+                        f"checkbox_group_{question[:20]}", 
+                        question, 
+                        option_count, 
+                        option_labels
+                    )
+                    
+                    print(f"    Matched Key: {matched_key}")
+                    print(f"    Confidence: {confidence}")
+                    
+                    if answer is not None and confidence == 'high':
+                        # Determine target index
+                        if isinstance(answer, bool):
+                            target_index = 0 if answer else 1
+                            print(f"    Resolved Answer: {'Yes' if answer else 'No'} (selecting option {target_index + 1})")
+                        elif isinstance(answer, int):
+                            target_index = answer
+                            print(f"    Resolved Answer: Option {target_index + 1} (index {target_index})")
+                        else:
+                            print(f"    ⚠️ Unexpected answer type: {type(answer)}")
+                            radio_needs_pause = True
+                            continue
+                        
+                        # Validate index
+                        if target_index >= option_count:
+                            print(f"    ⚠️ Target index {target_index} out of bounds")
+                            radio_needs_pause = True
+                            continue
+                        
+                        # Uncheck all checkboxes in group first
+                        for cb_data in checkboxes_in_group:
+                            cb = cb_data['element']
+                            if cb.is_checked():
+                                cb.focus()
+                                human_delay(config.TIMING["focus_delay_min"], config.TIMING["focus_delay_max"])
+                                page.keyboard.press("Space")
+                                human_delay(config.TIMING["key_delay_min"], config.TIMING["key_delay_max"])
+                        
+                        # Check only the target checkbox
+                        target_checkbox_data = checkboxes_in_group[target_index]
+                        target_checkbox = target_checkbox_data['element']
+                        
+                        target_checkbox.focus()
+                        human_delay(config.TIMING["focus_delay_min"], config.TIMING["focus_delay_max"])
+                        page.keyboard.press("Space")
+                        human_delay(config.TIMING["key_delay_min"], config.TIMING["key_delay_max"])
+                        
+                        if target_checkbox.is_checked():
+                            print(f"    ✓ Selected option {target_index + 1}: {option_labels[target_index]}")
+                        else:
+                            print(f"    ⚠️ Failed to check option")
+                            radio_needs_pause = True
+                        
+                        # Log resolution
+                        log_entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "job_url": job_url,
+                            "state": "RADIO_EQUIVALENT_RESOLUTION",
+                            "question": question,
+                            "matched_key": matched_key,
+                            "answer": answer,
+                            "selected_option": option_labels[target_index],
+                            "confidence": confidence,
+                            "classification": "RADIO_EQUIVALENT"
+                        }
+                        with open("log.jsonl", "a") as f:
+                            f.write(json.dumps(log_entry) + "\n")
+                    else:
+                        # Low confidence - cannot resolve
+                        print(f"    ⚠️ Low confidence - cannot resolve mutually exclusive choice")
+                        radio_needs_pause = True
+                        
+                        log_entry = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "job_url": job_url,
+                            "state": "RADIO_EQUIVALENT_UNRESOLVED",
+                            "question": question,
+                            "option_count": option_count,
+                            "confidence": confidence,
+                            "reason": matched_key,
+                            "classification": "RADIO_EQUIVALENT"
+                        }
+                        with open("log.jsonl", "a") as f:
+                            f.write(json.dumps(log_entry) + "\n")
+            
+            # Handle standard checkboxes (consent, acknowledgements, etc.)
+            if standard_checkboxes:
+                print(f"  Found {len(standard_checkboxes)} standard checkbox(es)")
+                for cb_data in standard_checkboxes:
+                    checkbox = cb_data['element']
+                    label_text = cb_data['label']
+                    
                     try:
                         is_already_checked = checkbox.is_checked()
-                    
-                        # Try to get label
-                        checkbox_id = checkbox.get_attribute('id')
-                        label_text = ''
-                        if checkbox_id:
-                            label = page.locator(f'label[for="{checkbox_id}"]')
-                            if label.count() > 0:
-                                label_text = label.first.inner_text().strip()
-                    
-                        print(f"    Checkbox {i+1}: {'[✓]' if is_already_checked else '[ ]'} {label_text[:60] if label_text else 'no label'}")
-                    
+                        print(f"    Checkbox: {'[✓]' if is_already_checked else '[ ]'} {label_text[:60] if label_text else 'no label'}")
+                        
                         if not is_already_checked:
                             label_lower = label_text.lower()
-                        
+                            
                             # Categorize checkbox
                             is_consent = any(word in label_lower for word in ["agree", "consent", "terms", "acknowledge", "confirm"])
                             is_communication = any(word in label_lower for word in ["email", "communication", "updates", "marketing", "newsletter", "inform", "receive"])
-                        
-                            # Check if it's marked as required
+                            
+                            # Check if required
                             is_required = False
+                            checkbox_id = cb_data['id']
                             if checkbox_id:
-                                # Check if the fieldset or label has "required" indicator
                                 required_marker = page.locator(f'label[for="{checkbox_id}"] :has-text("*")').count() > 0
                                 aria_required = checkbox.get_attribute('aria-required') == 'true'
                                 is_required = required_marker or "required" in label_lower or aria_required
-                        
+                            
                             if is_consent or is_required:
-                                # Always check consent and required checkboxes
+                                # Always check consent and required
                                 checkbox.focus()
                                 human_delay(config.TIMING["focus_delay_min"], config.TIMING["focus_delay_max"])
                                 page.keyboard.press("Space")
                                 human_delay(config.TIMING["key_delay_min"], config.TIMING["key_delay_max"])
                                 print(f"      → Checked (consent/required)")
                             elif is_communication:
-                                # Leave marketing/communication checkboxes UNCHECKED (opt-out by default)
+                                # Leave marketing unchecked
                                 print(f"      → Skipped (marketing/communication)")
                             else:
-                                # Unknown checkbox - CHECK IT to avoid blocking submission
-                                # Most unknown checkboxes are required for form submission
+                                # Unknown - check to avoid blocking
                                 print(f"      → Checking (unknown - assuming required to avoid blocking)")
                                 checkbox.focus()
                                 human_delay(config.TIMING["focus_delay_min"], config.TIMING["focus_delay_max"])
                                 page.keyboard.press("Space")
                                 human_delay(config.TIMING["key_delay_min"], config.TIMING["key_delay_max"])
                     except Exception as e:
-                        print(f"  ⚠️ Error with checkbox: {e}")
+                        print(f"      ⚠️ Error with checkbox: {e}")
         
             # Handle select dropdowns with semantic resolution
             select_fields = detect_select_fields(page)
