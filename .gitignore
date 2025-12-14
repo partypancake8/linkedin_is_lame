@@ -18,6 +18,9 @@ archive/
 debug_*.png
 *.pdf
 
+# Personal data
+linkedin_easy_apply/data/answer_bank.py
+
 # System
 .DS_Store
 node_modules/

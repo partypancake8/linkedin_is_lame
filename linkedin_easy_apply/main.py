@@ -162,7 +162,7 @@ def main():
                 print(f"    Options ({option_count}): {', '.join(option_labels)}")
                 
                 # Resolve question
-                answer, confidence, matched_key = resolve_radio_question(page, group_name, question_text, option_count)
+                answer, confidence, matched_key = resolve_radio_question(page, group_name, question_text, option_count, option_labels)
                 
                 print(f"    Matched Key: {matched_key}")
                 print(f"    Confidence: {confidence}")
@@ -321,6 +321,7 @@ def main():
                 label = select_data['label']
                 option_count = select_data['option_count']
                 option_texts = select_data['option_texts']
+                option_values = select_data['option_values']
                 current_value = select_data['current_value']
                 element = select_data['element']
                 
@@ -349,58 +350,135 @@ def main():
                     
                     # Capture value before selection
                     previous_value = element.input_value()
+                    target_option_text = option_texts[answer_index] if answer_index < len(option_texts) else None
+                    target_option_value = option_values[answer_index] if answer_index < len(option_values) else None
                     
-                    # Select option using keyboard-only approach
-                    try:
-                        element.focus()
-                        human_delay(200, 300)
-                        
-                        # Attempt to open dropdown using Space (preferred)
-                        page.keyboard.press("Space")
-                        human_delay(300, 500)
-                        
-                        # Fallback: some LinkedIn dropdowns require ArrowUp to open
-                        page.keyboard.press("ArrowUp")
-                        human_delay(300, 500)
-                        
-                        # Reset to top of dropdown by pressing ArrowUp multiple times
-                        # Use ArrowUp to ensure we're at the first option
-                        for _ in range(option_count + 2):  # Extra presses to ensure we're at top
-                            page.keyboard.press("ArrowUp")
-                            human_delay(50, 100)
-                        
-                        # Now navigate down to target index
-                        for _ in range(answer_index):
-                            page.keyboard.press("ArrowDown")
-                            human_delay(100, 150)
-                        
-                        # Press Enter to select the highlighted option
-                        page.keyboard.press("Enter")
-                        human_delay(400, 600)
-                        
-                        # Verify selection succeeded
-                        new_value = element.input_value()
-                        if new_value == previous_value:
-                            # Keyboard selection failed - try fallback
-                            print(f"    ⚠️ Keyboard selection failed, attempting fallback")
-                            try:
-                                element.select_option(index=answer_index)
+                    print(f"    Target: '{target_option_text}' (value: {target_option_value})")
+                    
+                    # Multi-strategy interaction ladder (stop on first success)
+                    selection_succeeded = False
+                    strategy_used = None
+                    
+                    # STRATEGY 1: Native <select> element - direct value assignment
+                    if not selection_succeeded:
+                        try:
+                            print(f"    Attempting Strategy 1: Native select.value assignment")
+                            # For native <select>, set the value directly
+                            if target_option_value:
+                                element.evaluate(f"""(el) => {{
+                                    el.value = '{target_option_value}';
+                                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                }}""")
                                 human_delay(300, 500)
                                 
-                                # Verify fallback
-                                final_value = element.input_value()
-                                if final_value == previous_value:
-                                    print(f"    ⚠️ Fallback also failed - pausing")
-                                    select_needs_pause = True
+                                # Verify selection - check if current value matches target
+                                new_value = element.input_value()
+                                if new_value == target_option_value:
+                                    selection_succeeded = True
+                                    strategy_used = "native_value_assignment"
+                                    print(f"    ✓ Strategy 1 succeeded (value: {new_value})")
                                 else:
-                                    print(f"    ✓ Fallback selection succeeded")
-                            except Exception as fallback_error:
-                                print(f"    ⚠️ Fallback error: {fallback_error} - pausing")
-                                select_needs_pause = True
-                        else:
-                            print(f"    ✓ Keyboard selection succeeded")
-                    except Exception as selection_error:
-                        print(f"    ⚠️ Selection error: {selection_error}")
+                                    print(f"    ✗ Strategy 1 failed (expected: {target_option_value}, got: {new_value})")
+                        except Exception as e:
+                            print(f"    ✗ Strategy 1 error: {e}")
+                    
+                    # STRATEGY 2: Playwright's select_option method
+                    if not selection_succeeded:
+                        try:
+                            print(f"    Attempting Strategy 2: Playwright select_option by index")
+                            element.select_option(index=answer_index)
+                            human_delay(300, 500)
+                            
+                            # Verify selection - check if value changed from previous
+                            new_value = element.input_value()
+                            # Success if either: value matches target OR value changed from empty/previous
+                            if new_value == target_option_value or (new_value != previous_value and new_value):
+                                selection_succeeded = True
+                                strategy_used = "playwright_select_option"
+                                print(f"    ✓ Strategy 2 succeeded (value: {new_value})")
+                            else:
+                                print(f"    ✗ Strategy 2 failed (value unchanged: {new_value})")
+                        except Exception as e:
+                            print(f"    ✗ Strategy 2 error: {e}")
+                    
+                    # STRATEGY 3: Keyboard navigation (existing approach)
+                    if not selection_succeeded:
+                        try:
+                            print(f"    Attempting Strategy 3: Keyboard navigation")
+                            element.focus()
+                            human_delay(200, 300)
+                            
+                            # Attempt to open dropdown using Space
+                            page.keyboard.press("Space")
+                            human_delay(300, 500)
+                            
+                            # Fallback: some dropdowns require ArrowUp to open
+                            page.keyboard.press("ArrowUp")
+                            human_delay(300, 500)
+                            
+                            # Reset to top by pressing ArrowUp multiple times
+                            for _ in range(option_count + 2):
+                                page.keyboard.press("ArrowUp")
+                                human_delay(50, 100)
+                            
+                            # Navigate down to target index
+                            for _ in range(answer_index):
+                                page.keyboard.press("ArrowDown")
+                                human_delay(100, 150)
+                            
+                            # Press Enter to select
+                            page.keyboard.press("Enter")
+                            human_delay(400, 600)
+                            
+                            # Verify selection - check if value changed from previous
+                            new_value = element.input_value()
+                            # Success if either: value matches target OR value changed from empty/previous
+                            if new_value == target_option_value or (new_value != previous_value and new_value):
+                                selection_succeeded = True
+                                strategy_used = "keyboard_navigation"
+                                print(f"    ✓ Strategy 3 succeeded (value: {new_value})")
+                            else:
+                                print(f"    ✗ Strategy 3 failed (value unchanged: {new_value})")
+                        except Exception as e:
+                            print(f"    ✗ Strategy 3 error: {e}")
+                    
+                    # STRATEGY 4: Custom/ARIA dropdown - click-based interaction
+                    if not selection_succeeded and target_option_text:
+                        try:
+                            print(f"    Attempting Strategy 4: Click-based ARIA dropdown")
+                            # Click the select element to open dropdown
+                            element.click()
+                            human_delay(300, 500)
+                            
+                            # Try to find and click the option by visible text
+                            # Look for option within modal dialog
+                            option_selector = f'[role="dialog"] [role="option"]:has-text("{target_option_text}")'
+                            option_locator = page.locator(option_selector).first
+                            
+                            if option_locator.count() > 0:
+                                option_locator.click()
+                                human_delay(400, 600)
+                                
+                                # Verify selection - check if value changed from previous
+                                new_value = element.input_value()
+                                # Success if either: value matches target OR value changed from empty/previous
+                                if new_value == target_option_value or (new_value != previous_value and new_value):
+                                    selection_succeeded = True
+                                    strategy_used = "aria_click_option"
+                                    print(f"    ✓ Strategy 4 succeeded (value: {new_value})")
+                                else:
+                                    print(f"    ✗ Strategy 4 failed (value unchanged: {new_value})")
+                            else:
+                                print(f"    ✗ Strategy 4 failed (option not found)")
+                        except Exception as e:
+                            print(f"    ✗ Strategy 4 error: {e}")
+                    
+                    # Evaluate final result
+                    if selection_succeeded:
+                        print(f"    ✓ Selection succeeded using: {strategy_used}")
+                    else:
+                        print(f"    ⚠️ All selection strategies failed - pausing")
                         select_needs_pause = True
                     
                     # Log to file
@@ -412,6 +490,8 @@ def main():
                         "matched_key": matched_key,
                         "selected_index": answer_index,
                         "confidence": confidence,
+                        "selection_succeeded": selection_succeeded,
+                        "strategy_used": strategy_used if selection_succeeded else "all_failed",
                     }
                     with open("log.jsonl", "a") as f:
                         f.write(json.dumps(log_entry) + "\n")
@@ -496,15 +576,12 @@ def main():
                     value_to_type = resolved_value
                     needs_pause = False
                 else:
-                    print(f"     ⚠️ No answer found - using TEST")
-                    # Do NOT type TEST into numeric fields
-                    if classification == 'NUMERIC_FIELD':
-                        print(f"     ⚠️ Numeric field with no answer - will PAUSE")
-                        value_to_type = None
-                        needs_pause = True
-                    else:
-                        value_to_type = "TEST"
-                        needs_pause = True
+                    # No answer found - PAUSE/SKIP behavior (NO "TEST" fallback)
+                    # Tier-1/Tier-2 fields should never reach here (always resolve or fail)
+                    # Generic TEXT_FIELD, NUMERIC_FIELD without matches will pause
+                    print(f"     ⚠️ No answer found - will PAUSE")
+                    value_to_type = None
+                    needs_pause = True
                 
                 # TYPE VALUE if we have one
                 if value_to_type:

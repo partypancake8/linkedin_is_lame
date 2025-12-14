@@ -26,16 +26,6 @@ def detect_radio_groups(page):
             group_radios = page.locator(f'[role="dialog"] input[type="radio"][name="{name}"]')
             option_count = group_radios.count()
             
-            # Check if already selected
-            is_checked = False
-            for j in range(option_count):
-                if group_radios.nth(j).is_checked():
-                    is_checked = True
-                    break
-            
-            if is_checked:
-                continue
-            
             # Extract question text from label/legend/fieldset
             question_text = ''
             

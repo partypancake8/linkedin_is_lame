@@ -32,6 +32,7 @@ def resolve_select_answer(select_metadata):
     # 1. Self-identification fields (EEO/diversity with "Decline" option)
     # 2. Start date/notice period (discrete time offsets only, no calendar dates)
     # 3. Education enrollment status (binary Yes/No only, current enrollment)
+    # 4. Summer 2026 internship availability (May-August 2026 ONLY, always Yes)
     select_mappings = {
         # Self-identification only (if presented as dropdowns instead of radios)
         ('gender',): 'gender',
@@ -47,7 +48,6 @@ def resolve_select_answer(select_metadata):
         # Only matches questions about availability timing, not specific dates
         ('when', 'start'): 'start_date_notice_period',
         ('start', 'date'): 'start_date_notice_period',
-        ('availability',): 'start_date_notice_period',
         ('notice', 'period'): 'start_date_notice_period',
         ('how', 'soon'): 'start_date_notice_period',
         
@@ -57,6 +57,12 @@ def resolve_select_answer(select_metadata):
         ('currently', 'enrolled'): 'education_enrollment_status',
         ('current', 'student'): 'education_enrollment_status',
         ('currently', 'attending'): 'education_enrollment_status',
+        
+        # Summer 2026 internship availability
+        # MUST explicitly mention May-August 2026 timeframe - no inference allowed
+        # This is checked BEFORE generic 'availability' to prevent false matches
+        ('available', 'may', 'august', '2026'): 'summer_2026_internship_availability',
+        ('availability', 'may', 'august', '2026'): 'summer_2026_internship_availability',
     }
     
     # Try to match keywords
@@ -70,7 +76,8 @@ def resolve_select_answer(select_metadata):
     # - Self-identification fields (with safe "Decline" option)
     # - Start date/notice period (discrete time offsets only)
     # - Education enrollment status (binary Yes/No only)
-    eligible_types = ['gender', 'race', 'veteran_status', 'disability_status', 'start_date_notice_period', 'education_enrollment_status']
+    # - Summer 2026 internship availability (May-August 2026 only, always Yes)
+    eligible_types = ['gender', 'race', 'veteran_status', 'disability_status', 'start_date_notice_period', 'education_enrollment_status', 'summer_2026_internship_availability']
     if matched_key not in eligible_types:
         return (None, 'low', 'unsupported_dropdown_type')
     
@@ -280,6 +287,50 @@ def resolve_select_answer(select_metadata):
             
             # No confident binary match found - do not guess
             return (None, 'low', 'no_binary_yes_no_match')
+        
+        # Handle summer_2026_internship_availability - May through August 2026 ONLY
+        elif matched_key == 'summer_2026_internship_availability':
+            # Guard: Must have availability configured (always True for this automation run)
+            if 'summer_2026_internship_availability' not in ANSWER_BANK:
+                return (None, 'low', 'summer_2026_availability_not_configured')
+            
+            # Guard: Must be strictly binary (2 real options, ignoring placeholders)
+            # Reject if dropdown has more than 3 options (allowing for "Select an option" placeholder)
+            if option_count > 3:
+                return (None, 'low', 'not_binary_dropdown')
+            
+            # Guard: Reject if any option suggests free-text or conditional responses
+            # "Other", "Maybe", "Depends" indicate this is not a simple Yes/No
+            non_binary_patterns = ['other', 'maybe', 'depends', 'not sure', 'conditional']
+            for opt_text in option_texts:
+                opt_lower = opt_text.lower()
+                if any(pattern in opt_lower for pattern in non_binary_patterns):
+                    return (None, 'low', 'contains_non_binary_options')
+            
+            # Policy: User is assumed available for May-August 2026 internships
+            # Always select "Yes" - no date parsing or inference logic
+            is_available = ANSWER_BANK['summer_2026_internship_availability']  # Always True
+            
+            # Match "Yes" option
+            yes_patterns = ['yes', 'available', 'i am available']
+            placeholder_patterns = ['select', 'choose', 'pick']
+            
+            for i, opt_text in enumerate(option_texts):
+                opt_normalized = normalize_option_text(opt_text)
+                
+                # Skip placeholder options
+                is_placeholder = any(p in opt_normalized for p in placeholder_patterns)
+                if is_placeholder:
+                    continue
+                
+                # Check if this is the Yes option (exact match for simple "yes" or substring for phrases)
+                is_yes = (opt_normalized == 'yes' or 
+                         any(p in opt_normalized for p in yes_patterns if len(p) > 3))
+                if is_available and is_yes:
+                    return (i, 'high', matched_key)
+            
+            # No confident Yes option found - do not guess
+            return (None, 'low', 'no_yes_option_match')
     
     # If matched_key exists but not in ANSWER_BANK, or no match at all
     return (None, 'low', 'unmatched')
