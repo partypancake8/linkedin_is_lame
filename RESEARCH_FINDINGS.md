@@ -1,4 +1,10 @@
-# Research Findings: LinkedIn Easy Apply Automation
+# Historical Research Notes (Read-Only)
+
+This document contains research findings from December 2024 that informed the original design decisions. It is preserved for historical context but is **not the current architecture documentation**.
+
+For current architecture, see [STRUCTURE.md](STRUCTURE.md).
+
+---
 
 ## Summary
 

@@ -1,183 +1,152 @@
 # LinkedIn Easy Apply Bot
 
-Keyboard-driven automation for LinkedIn Easy Apply submissions using state machine architecture and semantic text field resolution.
+Modular LinkedIn Easy Apply automation using keyboard-only navigation, semantic field resolution, and state machine architecture. Submits applications while mimicking human interaction patterns to avoid detection.
 
-## Features
+## What This Bot Does
 
-✅ **Keyboard Navigation** - Tab + Enter (more human-like, avoids detection)
-✅ **AUTO Mode** - Automatically finds and clicks Easy Apply button
-✅ **Multi-Step Forms** - Handles Next/Review/Submit progression
-✅ **Smart Text Fields** - Classifies fields and auto-fills from answer bank
-✅ **Manual Confirmation** - Requires YES/NO before submission
-✅ **Resume Upload** - Automatic PDF upload
-✅ **Auto-Skip** - Filters phone, email, address, web link fields
+- **Finds Easy Apply button** using keyboard Tab navigation (no mouse clicks)
+- **Fills out forms** automatically by matching field labels to your answer bank
+- **Handles multi-step applications** (Next/Review/Submit progression)
+- **Answers yes/no questions** using keyword matching (work authorization, sponsorship, etc.)
+- **Uploads resume** when file input detected
+- **Requires manual confirmation** before final submission (prevents accidental applications)
 
 ## Setup
 
-1. **Create virtual environment and install dependencies:**
+1. **Install dependencies:**
 
    ```bash
    python3 -m venv venv
    source venv/bin/activate
    pip install -r requirements.txt
-   playwright install chromium
+   python3 -m playwright install chromium
    ```
 
-2. **Log into LinkedIn (one-time setup):**
+2. **Configure your answers in `linkedin_easy_apply/data/answer_bank.py`:**
 
-   ```bash
-   ./setup_login.sh
+   ```python
+   ANSWER_BANK = {
+       # Numeric fields
+       'years_experience': '1',
+       'gpa': '3.5',
+       'notice_period_weeks': '2',
+
+       # Text fields
+       'linkedin_url': 'https://linkedin.com/in/yourprofile',
+       'github_url': 'https://github.com/yourusername',
+
+       # Boolean questions (yes/no radio buttons)
+       'authorized_to_work': True,
+       'requires_sponsorship': False,
+       'willing_to_relocate': False,
+   }
    ```
 
-   - A browser will open showing LinkedIn login
-   - Log in with your credentials
-   - **Press Ctrl+C in the terminal when done** to save the session
-   - Your login will be saved for all future bot runs
+3. **Set resume path in `linkedin_easy_apply/browser/session.py` (line ~40):**
 
-3. **Configure settings in `bot_manual.py`:**
-   - **Resume path** (line 558): `/Users/sawyersmith/Documents/resume2025.pdf`
-   - **Answer bank** (lines 17-36): Edit ANSWER_BANK dictionary to customize responses
+   ```python
+   RESUME_PATH = "/Users/yourusername/Documents/resume.pdf"
+   ```
 
 ## Usage
 
-### Run the bot (AUTO mode enabled by default):
+Run the bot with a job URL:
 
 ```bash
-python3 bot_manual.py "https://www.linkedin.com/jobs/view/123456789/"
+./run.sh "https://www.linkedin.com/jobs/view/123456789/"
 ```
 
-**What happens:**
+Or using Python directly:
 
-1. **Browser opens** to the job page
-2. **AUTO mode**: Bot uses Tab navigation to find Easy Apply button
-   - Tabs through page elements checking text and aria-labels
-   - Presses Enter when found (typically around tab 19)
-   - Falls back to manual if not found after 30 tabs
-3. **State machine loop** analyzes form and takes actions:
-   - **Text fields detected**: Classifies each field (numeric vs text)
-     - Matches to answer bank using keyword mappings
-     - Types resolved value or "TEST" for unknowns
-     - Pauses if numeric field has no answer
-   - **Radio buttons**: Selects first option in each group (blind)
-   - **Checkboxes**: Auto-checks consent/agreement boxes
-   - **Resume upload**: Uploads PDF if file input detected
-   - **Multi-step**: Presses Next/Review buttons automatically
-4. **Manual confirmation**: You must type YES to submit
-5. **Success verification**: Checks for "Application sent" message
-6. **Logging**: Appends result to `log.jsonl` with field metadata
-
-### Customizing Answers
-
-Edit the `ANSWER_BANK` dictionary in `bot_manual.py` (lines 17-36):
-
-```python
-ANSWER_BANK = {
-    # Numeric answers
-    'years_experience': '1',  # Change to your actual years
-    'gpa': '3.5',
-    'notice_period': '2',
-
-    # Text answers
-    'linkedin_url': 'https://linkedin.com/in/yourprofile',
-    'skills_summary': 'Your skills here...',
-    'why_interested': 'Your reason here...',
-}
+```bash
+source venv/bin/activate
+python -m linkedin_easy_apply.main "https://www.linkedin.com/jobs/view/123456789/"
 ```
 
-The bot matches field labels to these keys using keyword patterns defined in `resolve_field_answer()`.
+### What Happens
 
-## Auto-Skipped Fields
+1. **Browser launches** with persistent LinkedIn session (stay logged in)
+2. **Navigates to job page**
+3. **Auto-finds Easy Apply** by tabbing through page elements (typically Tab #19)
+4. **Form filling loop:**
+   - Detects current state (text fields / radio buttons / dropdowns)
+   - Uploads resume if file input found
+   - Fills text fields using answer bank matches
+   - Answers yes/no questions using keyword matching
+   - Selects dropdown options when confident
+   - Navigates multi-step forms automatically
+5. **Manual confirmation:** You must type `YES` to submit
+6. **Logs result** to `log.jsonl`
 
-Bot automatically skips auto-fillable fields:
+### When It Pauses
 
-- **Phone/mobile/telephone** - LinkedIn auto-fills from profile
-- **Email** - LinkedIn auto-fills from profile
-- **Address fields** - Street, city, zip, postal
-- **Web links** - LinkedIn URL, portfolio, website
+The bot pauses and requires manual intervention when:
 
-## Pause Conditions
+- **Unresolved text field** - No match found in answer bank (types "TEST" as placeholder)
+- **Unresolved yes/no question** - Question not recognized by keyword patterns
+- **Multi-option radio buttons** - More than 2 options (bot only handles binary yes/no)
+- **Large dropdowns** - More than 5 options (too risky to guess)
+- **Validation errors** - Typed value rejected by LinkedIn's inline validation
 
-Bot pauses for manual input when:
+You can skip (press Enter) or manually fix and continue.
 
-- **Unresolved text fields** - Field detected but no match in answer bank
-  - Types "TEST" as placeholder
-  - Pauses to let you review/correct
-- **Unresolved numeric fields** - Cannot type "TEST" into number fields
-  - Pauses immediately without filling
+## How It Works
 
-**Manual confirmation required before ALL submissions** - prevents accidental applications.
+See [STRUCTURE.md](STRUCTURE.md) for complete architecture documentation.
+
+**High-level flow:**
+
+```
+Job Page → Find Easy Apply (Tab navigation)
+         → Wait for Modal
+         → State Detection Loop:
+            ├─ Upload resume
+            ├─ Answer yes/no questions (radios)
+            ├─ Fill dropdowns (selects)
+            ├─ Fill text fields (inputs)
+            ├─ Navigate multi-step (Next/Review buttons)
+            └─ Manual confirmation → Submit
+```
+
+**Key behaviors:**
+
+- **Keyboard-only** - No mouse clicks, uses Tab/Enter/Space like a human
+- **Conservative** - Pauses on uncertainty rather than guessing incorrectly
+- **Logged** - All decisions written to `log.jsonl` for debugging
+- **Auto-skip** - Ignores pre-filled fields (email, phone, address)
 
 ## Logs
 
-All runs are logged to `log.jsonl` with enhanced metadata:
+Application results are logged to `log.jsonl`:
 
 ```json
-{"timestamp": "2025-12-12T15:30:00Z", "job_url": "...", "status": "SUCCESS", "steps_completed": 8}
-{"timestamp": "2025-12-12T15:31:00Z", "job_url": "...", "status": "SKIPPED", "failure_reason": "Text fields with unresolved answers", "steps_completed": 4}
-{"timestamp": "2025-12-12T15:32:00Z", "job_url": "...", "state": "MODAL_TEXT_FIELD_DETECTED", "action": "FIELD_RESOLUTION_ATTEMPTED", "field_count": 3, "fields": [{"label": "Years of experience", "classification": "NUMERIC_FIELD", "resolved_answer": "1", "typed_value": "1", "needs_pause": false}]}
+{"timestamp": "2025-12-13T10:30:00Z", "job_url": "...", "status": "SUCCESS", "steps_completed": 8}
+{"timestamp": "2025-12-13T10:31:00Z", "job_url": "...", "status": "SKIPPED", "reason": "Unresolved radio question"}
 ```
 
 Status values: `SUCCESS`, `SKIPPED`, `FAILED`, `CANCELLED`
 
-## Current Limitations
+## Architecture
 
-⚠️ **Radio buttons**: Bot selects first option without understanding the question
+This project uses a modular structure. See [STRUCTURE.md](STRUCTURE.md) for detailed documentation.
 
-- Works for many questions but may answer incorrectly
-- Example: "Do you need sponsorship?" → Always selects first option
+**Package layout:**
 
-⚠️ **Dropdowns/Selects**: Not yet implemented
-
-- Bot skips applications with dropdown fields
-
-⚠️ **Question semantic understanding**: No logic for:
-
-- Work authorization questions
-- Sponsorship questions
-- Salary expectations
-- Start date preferences
-
-## Technical Details
-
-**State Machine:**
-
-- `JOB_PAGE` → `MODAL_OPEN` → `TEXT_FIELD_DETECTED` → `FORM_STEP` → `REVIEW_STEP` → `SUBMITTED`
-- Each state has specific actions
-- State detection happens BEFORE actions (read → decide → act)
-
-**Text Field Resolution:**
-
-1. `classify_field_type()` - Returns NUMERIC_FIELD, TEXT_FIELD, or UNKNOWN
-2. `resolve_field_answer()` - Matches label keywords to answer bank
-3. Type safety check - Prevents "TEST" in numeric fields
-
-**Keyboard Controls:**
-
-- Tab: Navigate through elements
-- Enter: Activate buttons/links
-- Space: Select radio buttons and checkboxes
-- Control+A: Select all text in field
-
-**Modal Scoping:**
-
-- All selectors prefixed with `[role="dialog"]`
-- Prevents tabbing outside modal context
-- Actions never escape to job page
+```
+linkedin_easy_apply/
+├── main.py              # CLI entry point, orchestration loop
+├── browser/             # Browser session management
+├── state/               # State detection (modal vs form vs review)
+├── perception/          # DOM detection (text fields, radios, selects)
+├── reasoning/           # Field classification and answer resolution
+├── interaction/         # Keyboard automation (typing, tabbing, clicking)
+├── data/                # Answer bank configuration
+└── utils/               # Logging and timing utilities
+```
 
 ## Notes
 
-- The script runs once per invocation (no loops)
-- Browser runs in non-headless mode by default (set `headless=True` for background use)
-- Browser session saved in `browser_data/` directory
-- No retries - exits immediately on skip/fail
-
-## Project Structure
-
-See [STRUCTURE.md](STRUCTURE.md) for complete file organization.
-
-**Key files:**
-
-- `bot_manual.py` - Main bot (recommended)
-- `bot.py` - Experimental automation
-- `run_manual.sh` - Quick run script
-- `archive/` - Debug scripts and screenshots
+- Browser runs in non-headless mode (you can watch it work)
+- Session persists in `browser_data/` directory (stay logged into LinkedIn)
+- No retries - exits immediately on pause/failure
+- One application per invocation
