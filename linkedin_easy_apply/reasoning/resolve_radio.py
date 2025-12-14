@@ -100,6 +100,17 @@ def resolve_radio_question(page, group_name, question_text, option_count, option
             (('18', 'years'), 'over_18'),
             (('legal', 'age'), 'over_18'),
             (('legally', 'eligible', 'work'), 'legally_eligible'),
+            
+            # Reasonable accommodation - essential job functions
+            # "reasonable accommodation" + "essential functions" is highly specific
+            (('reasonable', 'accommodation', 'essential', 'functions'), 'reasonable_accommodation_essential_functions'),
+            (('with', 'without', 'accommodation', 'perform'), 'reasonable_accommodation_essential_functions'),
+            
+            # Driver's license requirement
+            # "driver's license" or "valid license" + "provide proof" or "required"
+            (('driver', 'license', 'proof'), 'drivers_license_proof'),
+            (('valid', 'license', 'employment'), 'drivers_license_proof'),
+            (('driver', 'license', 'required'), 'drivers_license_proof'),
         ]
         
         # Try to match keywords - first match wins (most specific first)

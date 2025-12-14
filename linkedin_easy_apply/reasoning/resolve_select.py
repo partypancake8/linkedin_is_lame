@@ -63,6 +63,28 @@ def resolve_select_answer(select_metadata):
         # This is checked BEFORE generic 'availability' to prevent false matches
         ('available', 'may', 'august', '2026'): 'summer_2026_internship_availability',
         ('availability', 'may', 'august', '2026'): 'summer_2026_internship_availability',
+        
+        # Language proficiency level
+        # Matches questions about language skill level (beginner, intermediate, advanced, fluent, native)
+        ('language', 'level'): 'language_proficiency',
+        ('language', 'proficiency'): 'language_proficiency',
+        ('select', 'level'): 'language_proficiency',  # Common pattern: "Select your level"
+        ('english', 'level'): 'language_proficiency',
+        ('english', 'proficiency'): 'language_proficiency',
+        
+        # Job referral source / How did you hear about us
+        # Matches questions about where applicant learned about the job opening
+        ('where', 'learned', 'opening'): 'referral_source',
+        ('how', 'hear', 'about'): 'referral_source',
+        ('how', 'find', 'job'): 'referral_source',
+        ('referral', 'source'): 'referral_source',
+        
+        # Education level completed
+        # Matches questions about highest education level achieved
+        ('highest', 'level', 'education'): 'education_level',
+        ('highest', 'education'): 'education_level',
+        ('education', 'level', 'completed'): 'education_level',
+        ('degree', 'level'): 'education_level',
     }
     
     # Try to match keywords
@@ -77,7 +99,10 @@ def resolve_select_answer(select_metadata):
     # - Start date/notice period (discrete time offsets only)
     # - Education enrollment status (binary Yes/No only)
     # - Summer 2026 internship availability (May-August 2026 only, always Yes)
-    eligible_types = ['gender', 'race', 'veteran_status', 'disability_status', 'start_date_notice_period', 'education_enrollment_status', 'summer_2026_internship_availability']
+    # - Language proficiency (standard levels: beginner to native)
+    # - Referral source (how did you hear about us - select from predefined list)
+    # - Education level (highest degree completed - select from standard education levels)
+    eligible_types = ['gender', 'race', 'veteran_status', 'disability_status', 'start_date_notice_period', 'education_enrollment_status', 'summer_2026_internship_availability', 'language_proficiency', 'referral_source', 'education_level']
     if matched_key not in eligible_types:
         return (None, 'low', 'unsupported_dropdown_type')
     
@@ -331,6 +356,141 @@ def resolve_select_answer(select_metadata):
             
             # No confident Yes option found - do not guess
             return (None, 'low', 'no_yes_option_match')
+        
+        # Handle language_proficiency - standard proficiency levels
+        elif matched_key == 'language_proficiency':
+            # Guard: Must have proficiency level configured
+            if 'language_proficiency' not in ANSWER_BANK:
+                return (None, 'low', 'language_proficiency_not_configured')
+            
+            # Guard: Must have reasonable number of options (typically 4-6 levels)
+            # Beginner, Intermediate, Advanced, Fluent, Native/Native or bilingual
+            if option_count > 8:
+                return (None, 'low', 'too_many_options_for_proficiency')
+            
+            expected_level = ANSWER_BANK['language_proficiency']
+            
+            # Language proficiency level mappings
+            # Maps answer bank values to common option text patterns
+            proficiency_keywords = {
+                'native': ['native', 'native or bilingual', 'bilingual', 'mother tongue', 'first language'],
+                'fluent': ['fluent', 'proficient', 'professional', 'full professional'],
+                'advanced': ['advanced', 'highly proficient', 'very good'],
+                'intermediate': ['intermediate', 'conversational', 'working proficiency'],
+                'beginner': ['beginner', 'elementary', 'limited', 'basic'],
+            }
+            
+            # Skip placeholder options
+            placeholder_patterns = ['select', 'choose', 'pick', 'select an option']
+            
+            if expected_level in proficiency_keywords:
+                for i, opt_text in enumerate(option_texts):
+                    opt_normalized = normalize_option_text(opt_text)
+                    
+                    # Skip placeholder options
+                    is_placeholder = any(p in opt_normalized for p in placeholder_patterns)
+                    if is_placeholder:
+                        continue
+                    
+                    # Match proficiency level
+                    for kw in proficiency_keywords[expected_level]:
+                        if normalize_option_text(kw) in opt_normalized:
+                            return (i, 'high', matched_key)
+            
+            # No confident match found - do not guess
+            return (None, 'low', 'language_level_not_matched')
+        
+        # Handle referral_source - how did you hear about this job
+        elif matched_key == 'referral_source':
+            # Guard: Must have referral source configured
+            if 'referral_source' not in ANSWER_BANK:
+                return (None, 'low', 'referral_source_not_configured')
+            
+            # Guard: Must have reasonable number of options (typically 5-20 sources)
+            if option_count > 25:
+                return (None, 'low', 'too_many_referral_options')
+            
+            expected_source = ANSWER_BANK['referral_source'].lower()
+            
+            # Referral source mappings
+            # Maps answer bank values to common option text patterns
+            source_keywords = {
+                'linkedin': ['linkedin', 'linked in'],
+                'indeed': ['indeed', 'indeed.com'],
+                'monster': ['monster', 'monster.com'],
+                'ziprecruiter': ['ziprecruiter', 'zip recruiter'],
+                'glassdoor': ['glassdoor', 'glass door'],
+                'company_website': ['company website', 'company site', 'career site', 'careers page'],
+                'referral': ['referral', 'employee referral', 'referred by'],
+                'recruiter': ['recruiter', 'headhunter', 'recruiting agency'],
+                'job_board': ['job board', 'online job board'],
+                'other': ['other'],
+            }
+            
+            # Skip placeholder options
+            placeholder_patterns = ['select', 'choose', 'pick', 'select an option']
+            
+            if expected_source in source_keywords:
+                for i, opt_text in enumerate(option_texts):
+                    opt_normalized = normalize_option_text(opt_text)
+                    
+                    # Skip placeholder options
+                    is_placeholder = any(p in opt_normalized for p in placeholder_patterns)
+                    if is_placeholder:
+                        continue
+                    
+                    # Match referral source
+                    for kw in source_keywords[expected_source]:
+                        if normalize_option_text(kw) in opt_normalized:
+                            return (i, 'high', matched_key)
+            
+            # No confident match found - do not guess
+            return (None, 'low', 'referral_source_not_matched')
+        
+        # Handle education_level - highest education level completed
+        elif matched_key == 'education_level':
+            # Guard: Must have education level configured
+            if 'education_level' not in ANSWER_BANK:
+                return (None, 'low', 'education_level_not_configured')
+            
+            # Guard: Must have reasonable number of options (typically 5-12 levels)
+            if option_count > 15:
+                return (None, 'low', 'too_many_education_options')
+            
+            expected_level = ANSWER_BANK['education_level'].lower()
+            
+            # Education level mappings
+            # Maps answer bank values to common option text patterns
+            education_keywords = {
+                'high_school': ['high school', 'hs diploma', 'secondary school', 'diploma received'],
+                'ged': ['ged', 'g.e.d', 'general education'],
+                'some_college': ['some college', 'college coursework', 'some university'],
+                'associate': ['associate', 'associates', "associate's", 'aa', 'as'],
+                'bachelor': ['bachelor', "bachelor's", 'bachelors', 'ba', 'bs', 'undergraduate'],
+                'master': ['master', "master's", 'masters', 'ma', 'ms', 'mba', 'graduate'],
+                'doctorate': ['doctorate', 'phd', 'doctoral', 'doctor'],
+                'vocational': ['vocational', 'trade school', 'technical school'],
+            }
+            
+            # Skip placeholder options
+            placeholder_patterns = ['select', 'choose', 'pick', 'select an option']
+            
+            if expected_level in education_keywords:
+                for i, opt_text in enumerate(option_texts):
+                    opt_normalized = normalize_option_text(opt_text)
+                    
+                    # Skip placeholder options
+                    is_placeholder = any(p in opt_normalized for p in placeholder_patterns)
+                    if is_placeholder:
+                        continue
+                    
+                    # Match education level
+                    for kw in education_keywords[expected_level]:
+                        if normalize_option_text(kw) in opt_normalized:
+                            return (i, 'high', matched_key)
+            
+            # No confident match found - do not guess
+            return (None, 'low', 'education_level_not_matched')
     
     # If matched_key exists but not in ANSWER_BANK, or no match at all
     return (None, 'low', 'unmatched')

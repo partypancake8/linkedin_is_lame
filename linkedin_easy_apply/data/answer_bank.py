@@ -40,6 +40,8 @@ ANSWER_BANK = {
     'legally_eligible': True,
     'education_enrollment_status': False,  # Currently enrolled in degree program
     'summer_2026_internship_availability': True,  # Available May-August 2026 (assumed true)
+    'reasonable_accommodation_essential_functions': True,  # Can perform essential functions with/without accommodation
+    'drivers_license_proof': True,  # Can provide proof of valid driver's license if required
     
     # Tier-1 radio fields (citizenship / employment eligibility)
     # Options: 'us_citizen', 'permanent_resident', 'us_citizen_or_permanent_resident', 'work_visa', 'not_authorized'
@@ -62,4 +64,19 @@ ANSWER_BANK = {
     
     # Disability status: 'yes_disability', 'no_disability', 'decline'
     'disability_status': 'no_disability',
+    
+    # Language proficiency levels
+    # Options: 'native', 'fluent', 'advanced', 'intermediate', 'beginner'
+    # Used for questions like "Select your English level" or "Language proficiency"
+    'language_proficiency': 'native',  # For English or primary language
+    
+    # Job referral source (how did you hear about us)
+    # Options: 'linkedin', 'indeed', 'monster', 'ziprecruiter', 'glassdoor', 
+    #          'company_website', 'referral', 'recruiter', 'job_board', 'other'
+    'referral_source': 'linkedin',
+    
+    # Education level completed (highest degree achieved)
+    # Options: 'high_school', 'ged', 'some_college', 'associate', 'bachelor', 
+    #          'master', 'doctorate', 'vocational'
+    'education_level': 'some_college',
 }

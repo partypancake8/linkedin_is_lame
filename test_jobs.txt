@@ -1,0 +1,8 @@
+# Sample job links for batch mode testing
+# Lines starting with # are comments and will be ignored
+
+https://www.linkedin.com/jobs/view/4305799166/
+
+
+# You can add your real LinkedIn job URLs here, one per line
+# Duplicate URLs will be automatically removed
