@@ -81,3 +81,32 @@ ANSWER_BANK = {
     #          'master', 'doctorate', 'vocational'
     'education_level': 'some_college',
 }
+
+# ========================================
+# TIER-2 USER ASSERTIONS
+# ========================================
+# Safety-critical: These expand automation coverage by allowing the bot
+# to repeat explicit user-asserted global truths.
+#
+# NON-NEGOTIABLE RULES:
+# - If config key is missing → SKIP field
+# - No fallback values allowed
+# - No inference from other fields
+# - Must be logged as Tier-2 user-asserted
+#
+# These fields resolve ONLY if explicitly defined below.
+# Remove any key to make the bot skip that field type.
+
+USER_ASSERTIONS = {
+    # Education
+    "education_completed_bachelors": True,  # bool - Completed bachelor's degree
+    
+    # Work & location preferences
+    "assume_commute_ok": True,              # bool - Comfortable commuting to office
+    "assume_onsite_ok": True,               # bool - Comfortable working onsite
+    
+    # Legal / employment (note: this is different from 'requires_sponsorship' in ANSWER_BANK)
+    # This specifically answers "Do you require sponsorship?" questions
+    # while ANSWER_BANK['requires_sponsorship'] answers "Will you require sponsorship?"
+    "requires_sponsorship": False,          # bool - Requires work visa sponsorship
+}

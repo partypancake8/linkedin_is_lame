@@ -1,6 +1,6 @@
 """Radio button resolution logic"""
 
-from linkedin_easy_apply.data.answer_bank import ANSWER_BANK
+from linkedin_easy_apply.data.answer_bank import ANSWER_BANK, USER_ASSERTIONS
 from linkedin_easy_apply.reasoning.normalize import normalize_text
 
 
@@ -160,6 +160,57 @@ def resolve_radio_question(
             answer = ANSWER_BANK[matched_key]
             if isinstance(answer, bool):
                 return (answer, "high", matched_key)
+
+    # TIER-2 USER ASSERTIONS (Binary questions with user-defined global truths)
+    # These run AFTER generic binary mappings but BEFORE multi-option questions
+    # Eligible ONLY if corresponding key exists in USER_ASSERTIONS
+    # If key missing → return None (skip field)
+    if option_count == 2:
+        # Education: Bachelor's degree completion
+        # Pattern: "completed the following level of education" + "bachelor"
+        if "completed the following level of education" in normalized and "bachelor" in normalized:
+            if "education_completed_bachelors" not in USER_ASSERTIONS:
+                return (None, "low", "education_bachelors_not_in_user_assertions")
+            return (
+                USER_ASSERTIONS["education_completed_bachelors"],
+                "high",
+                "education_completed_bachelors",
+            )
+
+        # Commute comfort: Willingness to commute to office
+        # Pattern: "comfortable commuting"
+        if "comfortable commuting" in normalized:
+            if "assume_commute_ok" not in USER_ASSERTIONS:
+                return (None, "low", "commute_comfort_not_in_user_assertions")
+            return (
+                USER_ASSERTIONS["assume_commute_ok"],
+                "high",
+                "assume_commute_ok",
+            )
+
+        # Onsite comfort: Willingness to work onsite
+        # Pattern: "comfortable working" + "onsite"
+        if "comfortable working" in normalized and "onsite" in normalized:
+            if "assume_onsite_ok" not in USER_ASSERTIONS:
+                return (None, "low", "onsite_comfort_not_in_user_assertions")
+            return (
+                USER_ASSERTIONS["assume_onsite_ok"],
+                "high",
+                "assume_onsite_ok",
+            )
+
+        # Sponsorship requirement: Work visa sponsorship needs
+        # Pattern: "require sponsorship" + "u.s." or "us"
+        # Note: This is distinct from ANSWER_BANK['requires_sponsorship']
+        # This handles "Do you require sponsorship?" vs "Will you require sponsorship?"
+        if "require sponsorship" in normalized and ("us" in normalized or "u s" in normalized):
+            if "requires_sponsorship" not in USER_ASSERTIONS:
+                return (None, "low", "sponsorship_not_in_user_assertions")
+            return (
+                USER_ASSERTIONS["requires_sponsorship"],
+                "high",
+                "requires_sponsorship",
+            )
 
     # TIER-1 & TIER-2: Citizenship / Work Authorization Questions (3+ options)
     # These run BEFORE generic multi-option to ensure proper classification

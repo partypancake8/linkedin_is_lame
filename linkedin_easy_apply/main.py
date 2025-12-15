@@ -333,6 +333,9 @@ Examples:
         print("🧪 Test mode enabled - will run without submitting\n")
 
     if debug_unresolved:
+        # Clear previous debug log to start fresh
+        with open("debug_unresolved.jsonl", "w", encoding="utf-8") as f:
+            pass
         print(
             "🔍 Debug mode enabled - recording unresolved fields to debug_unresolved.jsonl\n"
         )
