@@ -14,7 +14,7 @@ def launch_browser():
     
     context = p.chromium.launch_persistent_context(
         user_data_dir="./browser_data",
-        headless=False, 
+        headless=True, 
         args=[
             "--disable-blink-features=AutomationControlled",
             "--disable-features=site-per-process"

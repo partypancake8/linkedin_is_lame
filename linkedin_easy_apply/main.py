@@ -10,6 +10,8 @@ import time
 import random
 import argparse
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+import os
 
 # Local imports
 from linkedin_easy_apply.browser.session import launch_browser
@@ -304,7 +306,7 @@ Examples:
     for job_index, job_url in enumerate(job_urls, 1):
         # Initialize job-level tracking for CSV
         job_record = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': datetime.now(ZoneInfo('America/Detroit')).isoformat(),
             'job_url': job_url,
             'job_id': job_url.split('/')[-2] if '/jobs/view/' in job_url else 'unknown',
             'result': None,
@@ -620,7 +622,7 @@ Examples:
                     
                         # Log to file
                         log_entry = {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(ZoneInfo('America/Detroit')).isoformat(),
                             "job_url": job_url,
                             "state": "RADIO_RESOLUTION",
                             "group_name": group_name,
@@ -639,7 +641,7 @@ Examples:
                     
                         # Log unresolved radio
                         log_entry = {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(ZoneInfo('America/Detroit')).isoformat(),
                             "job_url": job_url,
                             "state": "RADIO_UNRESOLVED",
                             "group_name": group_name,
@@ -754,7 +756,7 @@ Examples:
                         
                         # Log resolution
                         log_entry = {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(ZoneInfo('America/Detroit')).isoformat(),
                             "job_url": job_url,
                             "state": "RADIO_EQUIVALENT_RESOLUTION",
                             "question": question,
@@ -772,7 +774,7 @@ Examples:
                         radio_needs_pause = True
                         
                         log_entry = {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(ZoneInfo('America/Detroit')).isoformat(),
                             "job_url": job_url,
                             "state": "RADIO_EQUIVALENT_UNRESOLVED",
                             "question": question,
@@ -1002,7 +1004,7 @@ Examples:
                     
                         # Log to file
                         log_entry = {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(ZoneInfo('America/Detroit')).isoformat(),
                             "job_url": job_url,
                             "state": "SELECT_RESOLUTION",
                             "label": label,
@@ -1026,7 +1028,7 @@ Examples:
                     
                         # Log unresolved select
                         log_entry = {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "timestamp": datetime.now(ZoneInfo('America/Detroit')).isoformat(),
                             "job_url": job_url,
                             "state": "SELECT_UNRESOLVED",
                             "label": label,
@@ -1138,7 +1140,7 @@ Examples:
                             
                                 # Log validation error
                                 validation_log = {
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "timestamp": datetime.now(ZoneInfo('America/Detroit')).isoformat(),
                                     "job_url": job_url,
                                     "state": "VALIDATION_ERROR",
                                     "field_label": field_info['label'],
@@ -1164,7 +1166,7 @@ Examples:
             
                 # Log to file with enhanced metadata
                 log_entry = {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(ZoneInfo('America/Detroit')).isoformat(),
                     "job_url": job_url,
                     "state": "MODAL_TEXT_FIELD_DETECTED",
                     "action": "FIELD_RESOLUTION_ATTEMPTED",
@@ -1625,7 +1627,10 @@ Examples:
         # Write CSV summary
         if csv_records:
             import csv
-            csv_filename = f"job_results_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+            # Create results directory if it doesn't exist
+            os.makedirs('results', exist_ok=True)
+            
+            csv_filename = f"results/job_results_{datetime.now(ZoneInfo('America/Detroit')).strftime('%Y%m%d_%H%M%S')}.csv"
             
             fieldnames = [
                 'timestamp',
@@ -1653,7 +1658,10 @@ Examples:
         # Single job mode - also write CSV if record exists
         if csv_records:
             import csv
-            csv_filename = f"job_results_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+            # Create results directory if it doesn't exist
+            os.makedirs('results', exist_ok=True)
+            
+            csv_filename = f"results/job_results_{datetime.now(ZoneInfo('America/Detroit')).strftime('%Y%m%d_%H%M%S')}.csv"
             
             fieldnames = [
                 'timestamp',

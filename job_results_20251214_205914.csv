@@ -1,3 +1,0 @@
-timestamp,job_url,job_id,result,skip_reason,state_at_exit,elapsed_seconds,fields_resolved_count,fields_unresolved_count,confidence_floor_hit
-2025-12-14T20:58:03.257702+00:00,https://www.linkedin.com/jobs/view/4305799166/,4305799166,SKIPPED,unresolved_field,SELECT_UNRESOLVED,48.038362979888916,0,0,True
-2025-12-14T20:58:51.296375+00:00,https://www.linkedin.com/jobs/view/4271097315/,4271097315,SKIPPED,unresolved_field,RADIO_UNRESOLVED,23.64482808113098,0,0,True
