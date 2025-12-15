@@ -9,19 +9,19 @@ def launch_browser():
     Reuses login session across runs.
     """
     print("Launching browser...")
-    
+
     p = sync_playwright().start()
-    
+
     context = p.chromium.launch_persistent_context(
         user_data_dir="./browser_data",
-        headless=True, 
+        headless=True,
         args=[
             "--disable-blink-features=AutomationControlled",
-            "--disable-features=site-per-process"
+            "--disable-features=site-per-process",
         ],
         user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     )
-    
+
     page = context.pages[0] if context.pages else context.new_page()
-    
+
     return context, page
